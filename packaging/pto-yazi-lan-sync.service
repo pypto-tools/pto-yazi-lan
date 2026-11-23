@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh the local pto-yazi-lan topology
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/yazi-lan/deployment.json
+
+[Service]
+Type=oneshot
+TimeoutStartSec=45s
+ExecStart=/usr/local/bin/yazi-lan-topology sync
+StateDirectory=yazi-lan
+StateDirectoryMode=0755
+ProtectSystem=strict
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0022

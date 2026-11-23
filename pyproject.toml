@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yazi-lan"
-version = "0.3.0"
+version = "0.4.0"
 description = "Two-pane SSH file transfers for Yazi on Linux"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -18,5 +18,6 @@ yazi-lan-topology = "yazi_lan.topology:main"
 packages = ["yazi_lan"]
 
 [tool.setuptools.data-files]
+"share/yazi-lan/scheduler" = ["packaging/pto-yazi-lan-sync.service", "packaging/pto-yazi-lan-sync.timer", "packaging/pto-yazi-lan-sync.cron"]
 "share/yazi-lan/yazi" = ["yazi/keymap.toml"]
 "share/yazi-lan/yazi/plugins/lan-copy.yazi" = ["yazi/plugins/lan-copy.yazi/main.lua"]

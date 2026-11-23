@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from yazi_lan import __main__ as client
 from yazi_lan.topology import SecureRedirect
@@ -78,6 +78,22 @@ class TopologyTest(unittest.TestCase):
         self.update("remove-node", "b")
         state = json.loads(self.file.read_bytes())
         self.assertEqual((set(state["nodes"]), state["links"], state["revision"]), ({"a"}, [], 4))
+
+    def test_reconnect_keeps_peer_chosen_with_preselected_files(self):
+        self.update("node", "c", "--lan", "10.20.0.33")
+        self.update("link", "a", "c", "--route", "lan-only")
+        browser = MagicMock()
+        browser.panes = [None, MagicMock(path="/remote")]
+        args = self.args("--select", "data")
+        with patch.object(client, "arguments", return_value=args), \
+             patch.object(client, "choose_peer", return_value="b") as choose, \
+             patch.object(client, "connect") as connect, \
+             patch.object(client, "remote_directory", return_value="/remote"), \
+             patch.object(client, "Browser", return_value=browser), \
+             patch.object(client.curses, "wrapper", side_effect=[True, False]):
+            self.assertEqual(client.main(), 0)
+        choose.assert_called_once()
+        self.assertEqual([call.args[0].ssh for call in connect.call_args_list], ["b", "b"])
 
 
 if __name__ == "__main__":

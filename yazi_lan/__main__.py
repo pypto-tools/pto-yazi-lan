@@ -167,8 +167,8 @@ def main():
                     return 0 if all(ok for ok, _ in checks) else 1
                 if browser is None:
                     local = os.path.realpath(os.path.expanduser(args.local_dir))
-                    selected = [os.path.abspath(os.path.join(local, p)) for p in args.select]
-                    browser = Browser(local, path, selected, args.focus)
+                    marked = [os.path.abspath(os.path.join(local, p)) for p in args.select]
+                    browser = Browser(local, path, marked, args.focus)
                 if not curses.wrapper(browser.run, session):
                     return 0
     except KeyboardInterrupt:

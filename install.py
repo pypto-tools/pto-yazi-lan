@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 WHEEL = f"yazi_lan-{VERSION}-py3-none-any.whl"
 RELEASE = f"https://github.com/pypto-tools/pto-yazi-lan/releases/download/v{VERSION}"
 SYSTEM_ROOT = Path("/usr/local/lib/pto-yazi-lan")
@@ -87,11 +87,6 @@ def main():
             sys.exit(f"{active} 已被占用。请先确认其内容。")
         package = args.wheel.resolve() if args.wheel else f"{RELEASE}/{WHEEL}"
         install_environment(env, package)
-        if args.node:
-            registry = ["--file", args.registry_file] if args.registry_file else []
-            subprocess.run([env / "bin/yazi-lan-topology", *registry, "bind", args.node, "--source",
-                            args.topology, "--deployment", SITE_FILE, *options], check=True)
-
         # A venv's scripts use absolute shebangs. Switch the link after the install succeeds.
         with tempfile.TemporaryDirectory(dir=root) as tmp:
             candidate = Path(tmp) / "current"
@@ -100,7 +95,14 @@ def main():
         for name in names:
             if not link_if_free(bindir / name, active / "bin" / name):
                 sys.exit(f"无法安装命令，{bindir / name} 已被占用。")
-        if not args.system:
+        manager = bindir / "yazi-lan-topology"
+        if args.node:
+            registry = ["--file", args.registry_file] if args.registry_file else []
+            subprocess.run([manager, *registry, "bind", args.node, "--source",
+                            args.topology, "--deployment", SITE_FILE, *options], check=True)
+        elif args.system and SITE_FILE.exists():
+            subprocess.run([manager, "sync", "--setup", "--deployment", SITE_FILE], check=True)
+        elif not args.system:
             subprocess.run([command, "--enable-plugin"], check=True)
 
     print(f"已安装 yazi-lan {VERSION}。运行 {command} --help 查看用法。")

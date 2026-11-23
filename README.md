@@ -4,25 +4,46 @@
 
 ## 管理员部署与更新拓扑
 
-管理员维护一份拓扑清单，登记服务器自己的地址、SSH 端口，以及哪些机器之间可以传输。普通用户登录任一台机器，运行 `yazi-lan --list` 选择对端即可。每次打开面板或按 `r` 重连都会读取当前清单。文件经 SSH 在源和目标机器之间传输。
+可以用现有的 NetBird 中心服务器发布拓扑。A、B 各自通过 HTTPS 拉取，在本机保存一份供所有账户读取的副本。用户从任一端发起复制时，文件经 SSH 在 A 和 B 之间传输，优先使用拓扑允许的机房内网。
 
-**使用共享清单。** 假设两台机器都能读取 `/mnt/ops/yazi-topology.json`，部署账户可以写入该文件及所在目录。先在 A 上执行下列命令。主机公钥文件取自本机 SSH 服务实际使用的公钥。
+| 在哪台机器 | 文件 | 用途 |
+| --- | --- | --- |
+| NetBird 中心 | `/srv/yazi/topology.json`（示例） | 管理员维护的原件，记录各节点的地址、SSH 端口、主机公钥和允许的连接 |
+| 每台传输服务器 | `/etc/yazi-lan/deployment.json` | 本机节点名、中心清单的 HTTPS 地址和可选的 CA 证书路径 |
+| 每台传输服务器 | `/var/lib/yazi-lan/topology.json` | 最近一次成功拉取的清单，供整机用户共用，由同步程序原子替换 |
+
+**在中心发布。** 在中心安装管理命令，将下面的地址和端口换成实际值。在现有 HTTPS 站点上把 `/yazi/topology.json` 映射到 `/srv/yazi/topology.json`，允许各节点通过 NetBird 只读访问。目录可由管理员指定，HTTPS 证书需要匹配访问时使用的名称。NetBird 管理服务本身无需改动。
+
+```bash
+curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/install.py | sudo python3 - --system
+sudo yazi-lan-topology --file /srv/yazi/topology.json node a --lan 10.20.0.11 --netbird 100.80.0.11 --port 22
+sudo yazi-lan-topology --file /srv/yazi/topology.json node b --lan 10.20.0.22 --netbird 100.80.0.22 --port 2222
+sudo yazi-lan-topology --file /srv/yazi/topology.json link a b --route lan-first
+```
+
+登记节点时，可加 `--host-key-file /path/to/node-host-key.pub` 指定已核对的该节点 SSH 主机公钥，也可用 `--interface eno1` 指定机房出口网卡。省略网卡时程序按本机登记的机房 IP 查找出口。
+
+**在 A 和 B 上接入。** 在 A 执行以下命令。在 B 将 `--node a` 改成 `--node b`，中心 URL 相同。示例域名需换成各节点能通过 NetBird 访问的实际地址。使用私有 CA 时追加 `--ca-file /etc/ops/ca.pem`。
 
 ```bash
 curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/install.py | sudo python3 - \
-  --system --node a --topology /mnt/ops/yazi-topology.json \
-  --lan 10.20.0.11 --netbird 100.80.0.11 --port 22 \
-  --host-key-file /etc/ssh/ssh_host_ed25519_key.pub
+  --system --node a --topology https://netbird-center.example.org/yazi/topology.json
+yazi-lan --list
 ```
 
-在 B 上使用同一条命令，将本机登记为 `--node b`，并填入 B 自己的机房 IP、NetBird IP 和 SSH 端口，例如 `10.20.0.22`、`100.80.0.22` 和 `2222`。程序会按本机登记的机房 IP 查找出口网卡。部署时也可加 `--interface eno1` 显式约束网卡。整机安装将命令放在 `/usr/local/bin`，本机标识与清单位置存于 `/etc/yazi-lan/deployment.json`。普通用户应只持有清单的读取权限。
+整机安装会立即拉取一次，并启用 `pto-yazi-lan-sync.timer`，默认每分钟检查一次。没有运行 systemd 的机器可使用安装器生成的 cron 任务，由已启动的 cron 服务执行。使用其他作业管理器时，可安排每分钟运行 `/usr/local/bin/yazi-lan-topology sync`。已用 0.3.0 登记中心 URL 的机器，重新执行整机安装命令并加 `--system` 即可沿用原登记并启用同步。
 
-管理员用下面的命令建立双向连接。以后在管理端更新 B 的端口或调整线路，各机下次连接就会生效。
+**变更和断网。** 例如在中心修改 B 的端口，各节点下次同步后，用户用 `yazi-lan --list` 可看到新端口和修订号，面板按 `r` 按新配置重连。已建立的 SSH 会话继续当前传输。中心不可达、证书校验失败或新文件内容无效时保留旧副本，下一轮会重试。首次需要成功拉取一次。节点离线期间，新增或移除的连接会在恢复同步后生效。
 
 ```bash
-yazi-lan-topology --file /mnt/ops/yazi-topology.json link a b --route lan-first
-yazi-lan-topology --file /mnt/ops/yazi-topology.json node b --port 2223
-yazi-lan-topology --file /mnt/ops/yazi-topology.json check
+# 在中心更新
+sudo yazi-lan-topology --file /srv/yazi/topology.json node b --port 2223
+sudo yazi-lan-topology --file /srv/yazi/topology.json check
+
+# 在任意已部署的节点立即拉取或查看定时任务
+sudo yazi-lan-topology sync
+systemctl list-timers pto-yazi-lan-sync.timer
+journalctl -u pto-yazi-lan-sync.service -n 10
 ```
 
 | 配置 | 效果 |
@@ -33,7 +54,7 @@ yazi-lan-topology --file /mnt/ops/yazi-topology.json check
 | `unlink a b` | 从双方的面板移除这条连接，下次重连生效 |
 | `remove-node b` | 下线 B，并在同一次更新中删除它的所有连接 |
 
-**使用现有管理机。** 没有共享磁盘时，可以把同一份 JSON 放在现有管理机的 HTTPS 站点。管理员在清单所在的机器上用 `node` 和 `link` 更新原文件。普通节点用 `--system --node a --topology https://ops.example.org/yazi/topology.json` 接入，B 将节点名称换成 `b`。私有 CA 可通过 `--ca-file /etc/ops/ca.pem` 指定。使用配置管理工具分发本地副本也可以，将 `--topology` 指向分发路径。HTTPS 模式每次打开或重连都需要读到管理端，已开始的复制使用已建立的 SSH 会话。
+**已有共享清单的部署。** `--topology /mnt/ops/yazi-topology.json` 会直接读取指定文件，适用于共享磁盘或已有的配置分发工具。部署账户对原件有写权限时，可在 `--system --node a` 安装命令里附加 `--lan`、`--netbird`、`--port` 等参数一并登记本机。HTTPS 接入时，管理员在中心原件上登记和更改节点。单独指定 `--deployment /path/to/site.json` 的独立客户端会在打开或重连时尝试更新，并将副本存入同目录的 `site.json.d/topology.json`。
 
 管理命令会校验整份清单、原子更新文件，并在实际修改时增加 `revision`。也可以在管理端编辑以下格式的 JSON，发布前用 `yazi-lan-topology --file 文件 check` 验证。
 
@@ -67,7 +88,7 @@ curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/
 
 Yazi 插件默认装到 `~/.config/yazi/plugins/lan-copy.yazi`，也支持 `YAZI_CONFIG_HOME` 和 `XDG_CONFIG_HOME`。首次安装会为新配置绑定 `F5`。已有的插件或快捷键文件会保留，下面的快捷键示例可用于合并自定义配置。
 
-也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./yazi_lan-0.3.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
+也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./yazi_lan-0.4.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
 
 ## 从源码安装
 
@@ -79,7 +100,7 @@ source ~/.local/share/yazi-lan/venv/bin/activate
 python -m pip install .
 ```
 
-也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/yazi_lan-0.3.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/yazi_lan-0.3.0-py3-none-any.whl`。
+也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/yazi_lan-0.4.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/yazi_lan-0.4.0-py3-none-any.whl`。
 
 两台机器都需要 Linux、Python 3.9 及以上、OpenSSH 客户端、iproute2，以及对方可访问的 SSH/SFTP 服务。两端装有 rsync 3.1 及以上时会使用 rsync。独立双栏面板可直接运行，从 Yazi 按 `F5` 打开需要本机装有兼容的 Yazi（已验证 26.9.1）。
 

@@ -4,20 +4,27 @@ import argparse
 import base64
 import copy
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import shlex
 import ssl
 import stat
+import subprocess
 import sys
 import tempfile
+from http.client import HTTPException
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 DEPLOYMENT = Path("/etc/yazi-lan/deployment.json")
+SNAPSHOT = Path("/var/lib/yazi-lan/topology.json")
+SYNC_META = "_yazi_lan_sync"
 ROUTES = ("lan-first", "lan-only", "netbird-only")
 NODE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,252}\Z")
 MAX_SIZE = 2 * 1024 * 1024
@@ -85,9 +92,12 @@ def validate(topology):
     return topology
 
 
-def read_json(stream):
-    data = stream.read(MAX_SIZE + 1)
-    require(len(data) <= MAX_SIZE, "配置文件超过 2 MiB")
+def read_json(stream, limit=MAX_SIZE, length=None):
+    if length is not None:
+        require(0 <= length <= limit, "配置文件大小无效或超过限制")
+    data = stream.read(limit + 1)
+    require(len(data) <= limit, "配置文件超过大小限制")
+    require(length is None or len(data) == length, "拓扑下载不完整")
     return json.loads(data)
 
 
@@ -107,25 +117,115 @@ class SecureRedirect(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def load_site(path):
+def read_binding(path):
     with path.open("rb") as f:
         site = read_json(f)
     require(isinstance(site, dict) and isinstance(site.get("node"), str) and NODE_NAME.fullmatch(site["node"]),
             f"无效的本机登记文件 {path}")
-    source = source_location(site.get("topology"))
-    if Path(source).is_absolute():
-        with Path(source).open("rb") as f:
+    source_location(site.get("topology"))
+    require(site.get("ca_file") is None or isinstance(site["ca_file"], str), "ca_file 应为 CA 文件路径")
+    return site
+
+
+def system_binding(path):
+    return path.resolve() == DEPLOYMENT.resolve()
+
+
+def snapshot_path(path):
+    if system_binding(path):
+        return SNAPSHOT
+    return path.parent / (path.name + ".d") / "topology.json"
+
+
+def origin_id(site):
+    fields = [site["topology"], site["node"], site.get("ca_file")]
+    return hashlib.sha256(json.dumps(fields).encode("utf-8")).hexdigest()
+
+
+def read_snapshot(path, site):
+    with path.open("rb") as f:
+        topology = validate(read_json(f, limit=MAX_SIZE + 4096))
+    meta = topology.pop(SYNC_META, None)
+    require(isinstance(meta, dict) and meta.get("origin") == origin_id(site),
+            "本地副本与当前登记的中心或节点不匹配")
+    return topology, meta.get("etag")
+
+
+def fetch(site, etag):
+    request = Request(site["topology"], headers={"Accept": "application/json", "Cache-Control": "no-cache"})
+    if etag:
+        request.add_header("If-None-Match", etag)
+    try:
+        tls = ssl.create_default_context(cafile=site.get("ca_file"))
+        opener = build_opener(HTTPSHandler(context=tls), SecureRedirect())
+        try:
+            response = opener.open(request, timeout=5)
+        except HTTPError as exc:
+            with exc:
+                if exc.code == 304 and etag:
+                    return None, etag
+                raise
+        with response as f:
+            require(f.status == 200, f"中心返回 HTTP {f.status}，需要完整的拓扑文件")
+            length = f.headers.get("Content-Length")
+            topology = validate(read_json(f, length=int(length) if length is not None else None))
+            topology.pop(SYNC_META, None)
+            tag = f.headers.get("ETag", "")
+            return topology, tag if valid_etag(tag) else None
+    except (OSError, HTTPException, ValueError, RecursionError) as exc:
+        raise ValueError(f"拉取中心 {urlsplit(site['topology']).hostname} 的拓扑失败（{exc}）") from exc
+
+
+def valid_etag(tag):
+    return isinstance(tag, str) and len(tag) <= 512 and re.fullmatch(r'(W/)?"[!#-~]*"', tag)
+
+
+def sync_site(path):
+    site = read_binding(path)
+    if Path(site["topology"]).is_absolute():
+        with Path(site["topology"]).open("rb") as f:
+            return validate(read_json(f))
+    dest = snapshot_path(path)
+    make_parent(dest, shared=system_binding(path))
+    with dest.with_name(".sync.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        require(read_binding(path) == site, "本机登记刚刚变更，请重新同步")
+        try:
+            prior, etag = read_snapshot(dest, site)
+        except (OSError, ValueError, RecursionError):
+            prior, etag = None, None
+        topology, new_etag = fetch(site, etag if valid_etag(etag) else None)
+        require(read_binding(path) == site, "下载期间本机登记发生变更，请重新同步")
+        if topology is None:
+            return prior
+        if topology != prior or new_etag != etag:
+            meta = {"origin": origin_id(site), "etag": new_etag}
+            write_json(dest, {**topology, SYNC_META: meta}, compact=True)
+        return topology
+
+
+def load_site(path):
+    site = read_binding(path)
+    source = Path(site["topology"])
+    if source.is_absolute():
+        with source.open("rb") as f:
             topology = validate(read_json(f))
     else:
-        ca_file = site.get("ca_file")
-        require(ca_file is None or isinstance(ca_file, str), "ca_file 应为 CA 文件路径")
+        dest = snapshot_path(path)
+        if not system_binding(path):
+            # Standalone bindings have no system timer. Refresh them on open and reconnect.
+            try:
+                sync_site(path)
+            except (OSError, ValueError) as exc:
+                print(f"拓扑同步失败，将尝试读取本地副本（{exc}）", file=sys.stderr)
+        site = read_binding(path)
         try:
-            tls = ssl.create_default_context(cafile=ca_file)
-            opener = build_opener(HTTPSHandler(context=tls), SecureRedirect())
-            with opener.open(source, timeout=5) as f:
-                topology = validate(read_json(f))
-        except OSError as exc:
-            raise ValueError(f"无法读取管理端 {urlsplit(source).hostname} 的拓扑（{exc}）") from exc
+            topology, _ = read_snapshot(dest, site)
+        except (OSError, ValueError, RecursionError) as exc:
+            command = "yazi-lan-topology sync"
+            if not system_binding(path):
+                command += " --deployment " + shlex.quote(str(path))
+            raise ValueError(f"没有可用的本地拓扑 {dest}，请运行 {command}（{exc}）") from exc
     local = site["node"]
     require(local in topology["nodes"], f"拓扑未登记本机 {local!r}")
     neighbors = {}
@@ -136,18 +236,33 @@ def load_site(path):
     return local, topology, neighbors
 
 
-def write_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
+def make_parent(path, *, shared):
+    try:
+        path.parent.mkdir(parents=True)
+    except FileExistsError:
+        return
+    if shared:
+        path.parent.chmod(0o755)
+
+
+def write_json(path, data, *, compact=False):
+    make_parent(path, shared=path == DEPLOYMENT)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
     with tempfile.NamedTemporaryFile("w", dir=path.parent, encoding="utf-8", delete=False) as f:
         tmp = Path(f.name)
         try:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=None if compact else 2,
+                      separators=(",", ":") if compact else None)
             f.write("\n")
             f.flush()
             os.fchmod(f.fileno(), mode)
             os.fsync(f.fileno())
             os.replace(tmp, path)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -196,6 +311,25 @@ def edit(path, args):
         return topology.get("revision", 0)
 
 
+def setup_pull(path):
+    site = read_binding(path)
+    if Path(site["topology"]).is_absolute():
+        print(f"直接使用本地清单 {site['topology']}")
+        return
+    if system_binding(path):
+        from . import schedule
+        try:
+            print(schedule.enable())
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            print(f"未能启用自动同步（{exc}）。可安排每分钟以管理员身份运行 yazi-lan-topology sync。",
+                  file=sys.stderr)
+    try:
+        topology = sync_site(path)
+        print(f"{snapshot_path(path)}  修订 {topology.get('revision', 0)}")
+    except (OSError, ValueError) as exc:
+        print(f"本次未能同步（{exc}）。已有的有效副本可继续使用。首次接入需要成功拉取一次。", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description="登记服务器，更新集中管理的传输拓扑")
     parser.add_argument("--file", type=Path, help="管理端拓扑 JSON 文件")
@@ -221,6 +355,9 @@ def main():
             sub.add_argument("--route", choices=ROUTES, required=True)
     commands.add_parser("remove-node", help="移除服务器及其连接").add_argument("name")
     commands.add_parser("check", help="验证拓扑文件")
+    sync = commands.add_parser("sync", help="从中心更新本机的拓扑副本")
+    sync.add_argument("--deployment", type=Path, default=DEPLOYMENT)
+    sync.add_argument("--setup", action="store_true", help="为整机 HTTPS 部署设置定时同步并立即拉取")
     args = parser.parse_args()
     try:
         if args.action == "bind":
@@ -236,6 +373,14 @@ def main():
                 print(f"{backing}  修订 {edit(backing, args)}")
             write_json(args.deployment, site)
             print(f"{args.name} 已登记，本机部署配置为 {args.deployment}")
+            setup_pull(args.deployment)
+            return
+        if args.action == "sync":
+            if args.setup:
+                setup_pull(args.deployment)
+            else:
+                topology = sync_site(args.deployment)
+                print(f"本机拓扑修订 {topology.get('revision', 0)}")
             return
         if not args.file:
             parser.error("此操作需要 --file 指定管理端清单")
