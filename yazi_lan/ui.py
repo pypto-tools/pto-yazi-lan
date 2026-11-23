@@ -7,6 +7,7 @@ import unicodedata
 
 import paramiko
 
+from .access import check_destination, check_directions
 from .connection import remote_directory
 from .transfer import copy_selected, selection
 
@@ -20,6 +21,7 @@ class Pane:
         self.items = []
         self.marked = set()
         self.cursor = 0
+        self.writable = None
 
     def load(self, sftp=None, focus=None):
         if focus is None and self.items:
@@ -52,6 +54,7 @@ class Pane:
         except BaseException:
             self.path = previous
             raise
+        self.writable = None
 
 
 def write(screen, row, col, width, value, style=0):
@@ -84,14 +87,15 @@ class Browser:
             screen.refresh()
             return
         middle = width // 2
-        title = f"{session.peer.ssh}  {session.label}  {session.address}  ·  {'rsync' if session.rsync else 'SFTP'}"
+        title = f"SSH 已认证 {session.login}  {session.label}  {session.address}  ·  {'rsync' if session.rsync else 'SFTP'}  {session.revision}"
         write(screen, 0, 0, width, title, curses.A_BOLD)
         rows = height - 5
         for side, pane in enumerate(self.panes):
             x = middle + 1 if side else 0
             span = width - x if side else middle - 1
             label = f"对端 {session.peer.ssh}" if side else f"本机 {self.local_host}"
-            write(screen, 1, x, span, f"{label}  {pane.path}  [{len(pane.marked)}]",
+            access = {None: "写入待查", True: "可新建", False: "写入受限"}[pane.writable]
+            write(screen, 1, x, span, f"{label} {access}  {pane.path}  [{len(pane.marked)}]",
                   curses.A_REVERSE if side == self.active else curses.A_BOLD)
             first = max(0, min(pane.cursor - rows // 2, len(pane.items) - rows))
             for j, (name, directory, link) in enumerate(pane.items[first:first + rows]):
@@ -124,6 +128,12 @@ class Browser:
         try:
             print(f"{session.label} {session.address}  {hosts[self.active]} → {dest_host}"
                   f"  {len(sources)} 项 → {target.path!r}  ·  Ctrl-C 中断", flush=True)
+            try:
+                check_destination(target.path, session.sftp if self.active == 0 else None)
+            except (OSError, RuntimeError):
+                target.writable = False
+                raise
+            target.writable = True
             copy_selected(session, self.active == 0, sources, target.path, key == ord("u"))
             self.notice = "已完成复制"
             pane.marked.clear()
@@ -145,7 +155,10 @@ class Browser:
         with contextlib.suppress(curses.error):
             curses.curs_set(0)
         self.panes[1].load(session.sftp)
-        self.notice = session.reason
+        upload, download = check_directions(self.panes[0].path, self.panes[1].path, session.sftp)
+        self.panes[0].writable, self.panes[1].writable = download[0], upload[0]
+        notices = [message for ok, message in (upload, download) if not ok]
+        self.notice = "  ".join(filter(None, [session.reason, *notices]))
         while True:
             self.draw(screen, session)
             key = screen.getch()

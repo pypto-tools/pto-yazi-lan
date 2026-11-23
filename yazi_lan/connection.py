@@ -11,6 +11,7 @@ import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import paramiko
 
@@ -44,6 +45,10 @@ class Peer:
     interface: str
     netbird: str
     ssh_config: str
+    port: int = None
+    local_lan: str = None
+    local_netbird: str = None
+    host_key: str = None
 
     def __post_init__(self):
         if not re.fullmatch(r"(?:[\w.][\w.$-]*@)?[\w][\w.-]*", self.ssh, re.ASCII):
@@ -53,26 +58,40 @@ class Peer:
                 ipaddress.ip_address(address)
         if not (self.lan or self.netbird):
             raise ValueError("请指定 --lan IP --interface 网卡，或 --netbird IP。")
-        if bool(self.lan) != bool(self.interface):
+        if bool(self.lan) != bool(self.interface or self.local_lan):
             raise ValueError("--lan 和 --interface 需要一起指定。")
+        if self.port is not None and (type(self.port) is not int or not 1 <= self.port <= 65535):
+            raise ValueError("SSH 端口需要是 1 到 65535 之间的整数。")
 
     @property
     def base(self):
-        return ["ssh", "-F", self.ssh_config] if self.ssh_config else ["ssh"]
+        args = ["ssh", "-F", self.ssh_config] if self.ssh_config else ["ssh"]
+        if self.port is not None:
+            args.extend(["-p", str(self.port)])
+        return args
 
-    def host_key_alias(self):
+    def login_options(self):
         info = subprocess.run(self.base + ["-G", "--", self.ssh], capture_output=True,
                               text=True, errors="replace", check=True)
         options = dict(line.split(" ", 1) for line in info.stdout.splitlines() if " " in line)
         alias = options.get("hostkeyalias")
-        if alias and alias != "none":
-            return alias
-        host = options["hostname"]
         port = options["port"]
-        return host if port == "22" else f"[{host}]:{port}"
+        if not alias or alias == "none":
+            host = options["hostname"]
+            alias = host if port == "22" else f"[{host}]:{port}"
+        return alias, options["user"], port
 
 
-def lan_source(address, interface):
+def interface_for(address):
+    proc = subprocess.run(["ip", "-j", "address", "show"], capture_output=True, check=True)
+    for item in json.loads(proc.stdout):
+        if any(ipaddress.ip_address(info["local"]) == ipaddress.ip_address(address)
+               for info in item.get("addr_info", []) if info.get("local")):
+            return item["ifname"]
+    raise Unreachable(f"本机网卡上没有拓扑登记的源地址 {address}")
+
+
+def lan_source(address, interface, preferred=None):
     if not shutil.which("ip"):
         raise ConnectionError("验证内网路由需要本机的 ip 命令（iproute2）。")
 
@@ -87,6 +106,9 @@ def lan_source(address, interface):
             raise Unreachable(f"{address} 的出口是 {actual}，预期是 {interface}")
         return routes[0]
 
+    if preferred:
+        lookup(["from", preferred])
+        return preferred
     route = lookup([])
     source = route.get("prefsrc") or route.get("src")
     if not source:
@@ -122,6 +144,8 @@ class Session:
     sftp: paramiko.SFTPClient
     rsync: bool
     reason: str = ""
+    login: str = ""
+    revision: str = ""
 
 
 @contextlib.contextmanager
@@ -129,7 +153,14 @@ def open_endpoint(peer, address, source, label, alias):
     with tempfile.TemporaryDirectory(prefix="yazi-lan-", dir="/tmp") as tmp, \
             tempfile.TemporaryFile() as errors, contextlib.ExitStack() as stack:
         # Every transfer uses this session's address, host key and private control socket.
-        ssh = peer.base + ["-T", "-S", os.path.join(tmp, "ssh"), "-oBatchMode=yes",
+        identity = []
+        if peer.host_key:
+            alias = "pto-yazi-topology-host"
+            known = Path(tmp) / "known_hosts"
+            known.write_text(f"{alias} {peer.host_key}\n", encoding="ascii")
+            identity = [f"-oUserKnownHostsFile={known}", "-oGlobalKnownHostsFile=/dev/null",
+                        "-oKnownHostsCommand=none", "-oVerifyHostKeyDNS=no"]
+        ssh = peer.base + identity + ["-T", "-S", os.path.join(tmp, "ssh"), "-oBatchMode=yes",
                            "-oStrictHostKeyChecking=yes", "-oUpdateHostKeys=no",
                            "-oForwardAgent=no", "-oClearAllForwardings=yes",
                            "-oProxyCommand=none", "-oProxyJump=none", "-oControlPersist=no",
@@ -164,6 +195,10 @@ def open_endpoint(peer, address, source, label, alias):
             detail = errors.read(8192).decode(errors="replace").strip() or str(exc)
             network_errors = ("connection timed out", "connection refused", "no route to host",
                               "network is unreachable", "operation timed out")
+            if "host key verification failed" in detail.lower() or "host identification has changed" in detail.lower():
+                raise ConnectionError(f"{peer.ssh} 的主机身份未通过验证，请与管理员核对 SSH 主机密钥。\n{detail}") from exc
+            if "permission denied (" in detail.lower():
+                raise ConnectionError(f"{peer.ssh} 的 SSH 账户认证失败，请检查该账户已授权的密钥。\n{detail}") from exc
             if any(msg in detail.lower() for msg in network_errors):
                 raise Unreachable(f"{address}: {detail}") from exc
             raise ConnectionError(f"SSH/SFTP {address}: {detail or '连接已关闭'}") from exc
@@ -183,25 +218,32 @@ def open_endpoint(peer, address, source, label, alias):
 
 @contextlib.contextmanager
 def connect(peer):
-    alias = peer.host_key_alias()
+    alias, user, port = peer.login_options()
     reason = ""
     # Keep errors from the file browser or a running copy outside the fallback logic.
     with contextlib.ExitStack() as stack:
         session = None
         if peer.lan:
             try:
-                source = lan_source(peer.lan, peer.interface)
+                interface = interface_for(peer.local_lan) if peer.local_lan else peer.interface
+                if peer.interface and peer.interface != interface:
+                    raise Unreachable(f"登记的源地址 {peer.local_lan} 在 {interface}，预期是 {peer.interface}")
+                source = lan_source(peer.lan, interface, peer.local_lan)
                 session = stack.enter_context(open_endpoint(
-                    peer, peer.lan, source, f"内网 {peer.interface}", alias))
+                    peer, peer.lan, source, f"内网 {interface}", alias))
             except Unreachable as exc:
                 if not peer.netbird:
                     raise
                 reason = str(exc)
         if session is None:
+            source = None
+            if peer.local_netbird:
+                source = lan_source(peer.netbird, interface_for(peer.local_netbird), peer.local_netbird)
             session = stack.enter_context(open_endpoint(
-                peer, peer.netbird, None, "NetBird", alias))
+                peer, peer.netbird, source, "NetBird", alias))
             session.label = netbird_label(peer.netbird)
         session.reason = reason
+        session.login = f"{user}@{peer.ssh.rsplit('@', 1)[-1]} (SSH {port})"
         yield session
 
 
