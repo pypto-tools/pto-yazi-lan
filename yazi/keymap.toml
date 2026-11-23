@@ -1,0 +1,4 @@
+[[mgr.prepend_keymap]]
+on = "<F5>"
+run = "plugin lan-copy"
+desc = "在本机和对端之间复制"
