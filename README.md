@@ -2,9 +2,23 @@
 
 在 A 和 B 上安装同一个程序，就能从任意一台发起复制。左栏始终是当前登录的机器，右栏是选中的对端。在哪一栏选文件或目录，就从哪一栏按 `F5` 复制到另一栏的当前目录。
 
-## 两台机器各安装一次
+## 一键安装
 
-在两台服务器各自的源码目录中执行以下命令，安装 `yazi-lan`、Yazi 插件和快捷键配置。
+在 A 和 B 上各用自己的登录账户执行一次。安装需要 Linux、`curl`、Python 3.9 或更高版本（含 `venv` 和 `ensurepip`），并能访问 GitHub Releases 和所配置的 Python 软件包索引。
+
+```bash
+curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/install.py | python3 -
+```
+
+安装器将命令放在 `~/.local/bin/yazi-lan`，将专用 Python 环境放在 `~/.local/share/yazi-lan/versions/`。如果终端提示找不到命令，可执行 `export PATH="$HOME/.local/bin:$PATH"`。给 `PYTHONUSERBASE` 或 `XDG_DATA_HOME` 设置了自定义路径时，安装器会使用对应目录。安装完成后，运行 `yazi-lan --help` 可检查命令是否可用。
+
+Yazi 插件默认装到 `~/.config/yazi/plugins/lan-copy.yazi`，也支持 `YAZI_CONFIG_HOME` 和 `XDG_CONFIG_HOME`。首次安装会为新配置绑定 `F5`。已有的插件或快捷键文件会保留，下面的快捷键示例可用于合并自定义配置。
+
+也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./yazi_lan-0.2.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
+
+## 从源码安装
+
+在源码目录中执行以下命令，安装 `yazi-lan`、Yazi 插件和快捷键配置。
 
 ```bash
 python3 -m venv ~/.local/share/yazi-lan/venv
@@ -60,7 +74,7 @@ yazi-lan
 
 例如在 B 上启动，左栏勾选 `checkpoints/`，右栏进入 A 的 `/data/incoming`。从左栏按 `F5` 和回车，目标是 A 上的 `/data/incoming/checkpoints/`。从右栏发起则会拉取到 B。另一台只需保持 SSH/SFTP 可达，传输面板可以关闭。
 
-要从 Yazi 打开，在任意一端激活上述虚拟环境后用包内的配置启动，选好本机文件再按 `F5`。
+一键安装后，启动 `yazi`，选好本机文件并按 `F5` 即可打开传输面板。使用自定义快捷键时，先合并下方的按键配置。从源码安装时，也可以激活上述虚拟环境并用包内的配置启动。
 
 ```bash
 YAZI_CONFIG_HOME="$VIRTUAL_ENV/share/yazi-lan/yazi" yazi .
