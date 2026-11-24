@@ -2,11 +2,12 @@
 
 import contextlib
 import os
+import re
+import selectors
 import shlex
 import signal
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
@@ -22,13 +23,25 @@ def selection(paths):
     return paths
 
 
-def rsync_copy(session, push, paths, dest, update):
+class CopyCancelled(Exception):
+    pass
+
+
+def check_cancel(cancel):
+    if cancel.is_set():
+        raise CopyCancelled()
+
+
+RSYNC_PROGRESS = re.compile(rb"^\s*([\d,]+)\s+(\d+)%\s+(\S+/s)(?:\s|$)")
+
+
+def rsync_copy(session, push, paths, dest, update, report, cancel):
     # A NUL-separated files-from list avoids shell/glob expansion of either side's names.
     peer = session.peer.ssh
     target = dest.rstrip("/") + "/"
     ends = ["/", f"{peer}:{target}"] if push else [f"{peer}:/", target]
     args = ["rsync", "-rltps", "--from0", "--files-from=-", "--no-relative",
-            "--partial-dir=.rsync-partial", "--info=progress2", "--human-readable",
+            "--partial-dir=.rsync-partial", "--info=progress2,name0", "--no-human-readable", "--outbuf=N",
             "-e", shlex.join(session.ssh)]
     if not update:
         args.append("--ignore-existing")
@@ -36,23 +49,52 @@ def rsync_copy(session, push, paths, dest, update):
         for path in paths:
             names.write(os.fsencode(path.lstrip("/")) + b"\0")
         names.seek(0)
-        proc = subprocess.Popen([*args, "--", *ends], stdin=names, stderr=sys.stdout)
-        try:
-            code = proc.wait()
-        except KeyboardInterrupt:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGINT)
-            proc.wait()
-            raise
-        if code:
-            raise RuntimeError(f"rsync 退出码 {code}，可用同一选择和目标重试")
+        with subprocess.Popen([*args, "--", *ends], stdin=names, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, start_new_session=True,
+                              env={**os.environ, "LC_ALL": "C"}) as proc:
+            pending = b""
+            diagnostic = ""
+            try:
+                with selectors.DefaultSelector() as poller:
+                    poller.register(proc.stdout, selectors.EVENT_READ)
+                    while True:
+                        check_cancel(cancel)
+                        if not poller.select(0.15):
+                            continue
+                        block = os.read(proc.stdout.fileno(), 16384)
+                        lines = re.split(rb"[\r\n]", pending + block)
+                        pending = lines.pop()[-8192:] if block else b""
+                        for line in lines:
+                            match = RSYNC_PROGRESS.match(line)
+                            if match:
+                                count, percent, speed = match.groups()
+                                report(int(count.replace(b",", b"")), int(percent), speed.decode("ascii"), "")
+                            elif line.strip():
+                                diagnostic = line.decode(errors="replace")[-500:]
+                        if not block:
+                            break
+                while proc.poll() is None:
+                    if cancel.wait(0.15):
+                        raise CopyCancelled()
+                if proc.returncode:
+                    raise RuntimeError(f"rsync 退出码 {proc.returncode}  {diagnostic}")
+            finally:
+                if proc.poll() is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        with contextlib.suppress(ProcessLookupError):
+                            os.killpg(proc.pid, signal.SIGKILL)
 
 
-def sftp_copy(session, push, paths, dest, update):
+def sftp_copy(session, push, paths, dest, update, report, cancel):
     sftp = session.sftp
     source, target = (os, sftp) if push else (sftp, os)
 
     def copy(path, to):
+        check_cancel(cancel)
         info = source.lstat(path)
         mode = info.st_mode
         try:
@@ -78,15 +120,20 @@ def sftp_copy(session, push, paths, dest, update):
         if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
             raise ValueError(f"仅支持普通文件、目录和符号链接 {path!r}")
         tmp = os.path.join(os.path.dirname(to), ".yazi-lan-" + uuid.uuid4().hex)
-        print(f"{path!r}", flush=True)
-        last = 0.0
+        last = time.monotonic()
+        previous = 0
+        report(0, 0, "—", os.path.basename(path))
 
         def progress(done, total):
-            nonlocal last
+            nonlocal last, previous
+            check_cancel(cancel)
             now = time.monotonic()
-            if now - last >= 0.25 or done == total:
-                print(f"\r{done:,} / {total:,} bytes", end="", flush=True)
-                last = now
+            elapsed = now - last
+            if elapsed >= 0.25 or done == total:
+                rate = (done - previous) / max(elapsed, 0.000001)
+                speed = f"{rate / 1048576:.1f} MiB/s" if rate >= 1048576 else f"{rate / 1024:.1f} KiB/s"
+                report(done, 100 * done // max(1, total), speed, os.path.basename(path))
+                last, previous = now, done
 
         try:
             if stat.S_ISLNK(mode):
@@ -96,7 +143,7 @@ def sftp_copy(session, push, paths, dest, update):
                     sftp.put(path, tmp, callback=progress)
                 else:
                     sftp.get(path, tmp, callback=progress, max_concurrent_prefetch_requests=32)
-                print()
+                check_cancel(cancel)
                 target.chmod(tmp, mode & 0o777)
                 target.utime(tmp, (info.st_atime, info.st_mtime))
 
@@ -117,9 +164,9 @@ def sftp_copy(session, push, paths, dest, update):
         copy(path, os.path.join(dest, os.path.basename(path)))
 
 
-def copy_selected(session, push, paths, dest, update):
+def copy_selected(session, push, paths, dest, update, report, cancel):
     paths = selection(paths)
     if session.rsync:
-        rsync_copy(session, push, paths, dest, update)
+        rsync_copy(session, push, paths, dest, update, report, cancel)
     else:
-        sftp_copy(session, push, paths, dest, update)
+        sftp_copy(session, push, paths, dest, update, report, cancel)

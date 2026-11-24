@@ -191,7 +191,8 @@ def managed_profile(args, deployment, requested):
     peer = Peer(ssh, lan, here.get("interface") if lan else None, mesh, args.ssh_config,
                 port=there.get("port", 22), local_lan=here.get("lan") if lan else None,
                 local_netbird=here.get("netbird") if mesh else None,
-                host_key=public_key(there["host_key"]) if there.get("host_key") else None)
+                host_key=public_key(there["host_key"]) if there.get("host_key") else None,
+                local_name=local, remote_name=name)
     return peer, args.remote_dir or ".", selected, revision
 
 
@@ -227,7 +228,7 @@ def profile(args, previous=None):
         raise ValueError("--only-lan 需要配置机房内网地址和网卡")
     return Peer(ssh, lan, args.interface or saved.get("interface"),
                 None if args.only_lan else args.netbird or saved.get("netbird"),
-                args.ssh_config or saved.get("ssh_config"), port), args.remote_dir or saved.get("remote_dir", "."), name, ""
+                args.ssh_config or saved.get("ssh_config"), port, remote_name=host), args.remote_dir or saved.get("remote_dir", "."), name, ""
 
 
 def main(*, legacy=False):

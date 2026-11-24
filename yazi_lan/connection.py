@@ -49,6 +49,8 @@ class Peer:
     local_lan: str = None
     local_netbird: str = None
     host_key: str = None
+    local_name: str = ""
+    remote_name: str = ""
 
     def __post_init__(self):
         if not re.fullmatch(r"(?:[\w.][\w.$-]*@)?[\w][\w.-]*", self.ssh, re.ASCII):

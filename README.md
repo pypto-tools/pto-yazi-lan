@@ -119,7 +119,7 @@ curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/
 
 Yazi 插件默认装到 `~/.config/yazi/plugins/lan-copy.yazi`，也支持 `YAZI_CONFIG_HOME` 和 `XDG_CONFIG_HOME`。首次安装会为新配置绑定 `F5`。已有的插件或快捷键文件会保留，下面的快捷键示例可用于合并自定义配置。
 
-也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.6.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
+也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.7.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
 
 ## 从源码安装
 
@@ -131,7 +131,7 @@ source ~/.local/share/yazi-lan/venv/bin/activate
 python -m pip install .
 ```
 
-也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.6.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.6.0-py3-none-any.whl`。
+也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.7.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.7.0-py3-none-any.whl`。
 
 两台机器都需要 Linux、Python 3.9 及以上、OpenSSH 客户端、iproute2，以及对方可访问的 SSH/SFTP 服务。两端装有 rsync 3.1 及以上时会使用 rsync。独立双栏面板可直接运行，从 Yazi 按 `F5` 打开需要本机装有兼容的 Yazi（已验证 26.9.1）。
 
@@ -198,18 +198,25 @@ desc = "在本机和对端之间复制"
 
 ## 传输面板
 
-按 `F5` 并确认后，双栏会暂时切换到当前终端的传输输出。rsync 的进度行显示百分比和传输速度，SFTP 的进度行显示当前文件已传和总字节数。传完按回车返回双栏。
+两栏标题显示节点名，亮色标题和整行光标标出当前操作的一侧。目录、链接及常见文件类型有不同图标，宽窗口还会显示文件大小。底部提示本次上传或下载的目标。要显示完整图标，在发起 SSH 的终端中选用 Nerd Font。按 `i` 可切换为基础符号。
+
+按 `F5` 确认复制后，任务按顺序在后台执行。双栏底部显示方向、文件名、进度、速率和已传大小。rsync 显示本批次的进度，SFTP 显示当前文件的进度。复制期间可以继续浏览并追加任务，按 `t` 展开完整列表。退出或重连前可等待队列完成，或按 `x` 取消队列。
+
+按 `p` 可在另一栏预览光标下的本地或远端项目。UTF-8 文本显示开头最多 8 KiB，二进制文件显示大小和十六进制摘要，符号链接显示目标。远端文件通过当前 SSH 连接读取。
 
 | 按键 | 操作 |
 | --- | --- |
 | `Tab` | 切换本机和对端两栏 |
+| `i` | 切换 Nerd Font 图标与基础符号 |
+| `p`、`PgUp` / `PgDn` | 开关文件预览、滚动预览 |
+| `t` | 展开或收起传输列表，展开后用 ↑↓ 滚动 |
 | `↑`、`↓` 或 `k`、`j` | 移动光标 |
 | `Enter`、`l` / `Backspace`、`h` | 进入目录 / 返回上级 |
 | 空格 | 勾选或取消当前项，可跨目录选择 |
 | `F5` 或 `c` | 把选中项复制到另一栏当前目录，未勾选时使用光标所在项 |
 | 在复制提示中按 `Enter` 或 `s` | 合并目录，跳过目标已有的同名文件 |
 | 在复制提示中按 `u` | 合并目录，允许更新同名文件，目标独有的文件会保留 |
-| 传输时按 `Ctrl-C` | 中断并保留选择，回到面板后用 `F5` 重试 |
+| `x` | 取消当前及排队中的任务，将未完成任务的来源重新勾选 |
 | `r` / `q` | 重新选路并连接 / 退出传输面板 |
 
 ## 内网和 NetBird
