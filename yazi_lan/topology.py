@@ -1,6 +1,5 @@
 """The administrator's machine and route inventory."""
 
-import argparse
 import base64
 import copy
 import fcntl
@@ -279,19 +278,22 @@ def edit(path, args):
             topology = {"schema": 1, "revision": 0, "nodes": {}, "links": []}
         before = copy.deepcopy(topology)
         if args.action in ("node", "bind"):
-            node = topology["nodes"].setdefault(args.name, {})
+            name = args.node if args.action == "node" else args.bind
+            require(NODE_NAME.fullmatch(name), "服务器名称格式无效")
+            node = topology["nodes"].setdefault(name, {})
             for field in ("lan", "netbird", "port", "interface", "ssh"):
                 value = getattr(args, field)
                 if value is not None:
                     node[field] = value
             if args.host_key_file:
                 node["host_key"] = public_key(args.host_key_file.read_text(encoding="ascii"))
-        elif args.action == "remove-node":
-            require(args.name in topology["nodes"], f"服务器 {args.name!r} 尚未登记")
-            del topology["nodes"][args.name]
-            topology["links"] = [link for link in topology["links"] if args.name not in link["nodes"]]
+        elif args.action == "remove_node":
+            name = args.remove_node
+            require(name in topology["nodes"], f"服务器 {name!r} 尚未登记")
+            del topology["nodes"][name]
+            topology["links"] = [link for link in topology["links"] if name not in link["nodes"]]
         else:
-            names = sorted([args.a, args.b])
+            names = sorted(args.link if args.action == "link" else args.unlink)
             for link in topology["links"]:
                 if sorted(link["nodes"]) == names:
                     if args.action == "unlink":
@@ -321,7 +323,7 @@ def setup_pull(path):
         try:
             print(schedule.enable())
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            print(f"未能启用自动同步（{exc}）。可安排每分钟以管理员身份运行 pto-yazi-lan-topology sync。",
+            print(f"未能启用自动同步（{exc}）。可安排每分钟以管理员身份运行 pto-yazi-lan --sync。",
                   file=sys.stderr)
     try:
         topology = sync_site(path)
@@ -335,85 +337,59 @@ def sync_now(path):
         topology = sync_site(path)
     except FileNotFoundError:
         if not path.exists():
-            raise ValueError(f"本机尚未登记中心清单（{path}），请先在整机安装时指定 --node 和 --topology。") from None
+            raise ValueError(f"本机尚未登记中心清单（{path}），请先用 pto-yazi-lan --bind 节点名 --source 清单地址登记。") from None
         raise
     except PermissionError:
         if not system_binding(path) or os.geteuid() == 0:
             raise
         # Elevate the system installation, never a program or binding supplied by the user.
-        for name in ("pto-yazi-lan-topology", "yazi-lan-topology"):
+        for name, flag in (("pto-yazi-lan", "--sync"), ("yazi-lan-topology", "sync")):
             manager = Path("/usr/local/bin") / name
             if manager.is_file():
                 print("更新整机共享清单需要管理员权限，正在调用 sudo。", flush=True)
-                return subprocess.run(["sudo", "--", str(manager), "sync"]).returncode
+                return subprocess.run(["sudo", "--", str(manager), flag]).returncode
         raise
     print(f"本机拓扑修订 {topology.get('revision', 0)}")
     return 0
 
 
+def manage(args):
+    if args.action == "setup_sync":
+        setup_pull(args.deployment or DEPLOYMENT)
+        return
+    if args.action == "bind":
+        path = args.deployment or DEPLOYMENT
+        require(NODE_NAME.fullmatch(args.bind), "本机名称格式无效")
+        source = source_location(args.source)
+        site = {"node": args.bind, "topology": source}
+        local_source = Path(source) if Path(source).is_absolute() else None
+        backing = args.file or local_source
+        for inventory in (args.file, local_source):
+            require(inventory is None or inventory.resolve() != path.resolve(),
+                    "本机登记文件和中心拓扑文件需要使用不同的路径")
+        if args.ca_file:
+            ssl.create_default_context(cafile=str(args.ca_file))
+            site["ca_file"] = str(args.ca_file.resolve())
+        if any(getattr(args, key) is not None for key in ("lan", "netbird", "port", "interface", "ssh", "host_key_file")):
+            require(backing is not None, "请在中心用 --node 登记，或用 --file 指定可写的清单原件")
+            print(f"{backing}  修订 {edit(backing, args)}")
+        write_json(path, site)
+        print(f"{args.bind} 已登记，本机部署配置为 {path}")
+        setup_pull(path)
+        return
+    if args.action == "check_topology":
+        with args.file.open("rb") as f:
+            rev = validate(read_json(f)).get("revision", 0)
+    else:
+        rev = edit(args.file, args)
+    print(f"{args.file}  修订 {rev}")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="登记服务器，更新集中管理的传输拓扑")
-    parser.add_argument("--file", type=Path, help="管理端拓扑 JSON 文件")
-    commands = parser.add_subparsers(dest="action", required=True)
-    for action in ("node", "bind"):
-        node = commands.add_parser(action, help="登记服务器" if action == "node" else "将本机接入集中拓扑")
-        node.add_argument("name")
-        node.add_argument("--lan")
-        node.add_argument("--netbird")
-        node.add_argument("--interface")
-        node.add_argument("--port", type=int)
-        node.add_argument("--ssh", help="OpenSSH 别名")
-        node.add_argument("--host-key-file", type=Path, help="管理员已核对的 SSH 主机公钥")
-        if action == "bind":
-            node.add_argument("--source", required=True)
-            node.add_argument("--deployment", type=Path, default=DEPLOYMENT)
-            node.add_argument("--ca-file", type=Path)
-    for action in ("link", "unlink"):
-        sub = commands.add_parser(action)
-        sub.add_argument("a")
-        sub.add_argument("b")
-        if action == "link":
-            sub.add_argument("--route", choices=ROUTES, required=True)
-    commands.add_parser("remove-node", help="移除服务器及其连接").add_argument("name")
-    commands.add_parser("check", help="验证拓扑文件")
-    sync = commands.add_parser("sync", help="从中心更新本机的拓扑副本")
-    sync.add_argument("--deployment", type=Path, default=DEPLOYMENT)
-    sync.add_argument("--setup", action="store_true", help="为整机 HTTPS 部署设置定时同步并立即拉取")
-    args = parser.parse_args()
-    try:
-        if args.action == "bind":
-            require(NODE_NAME.fullmatch(args.name), "本机名称格式无效")
-            source = source_location(args.source)
-            site = {"node": args.name, "topology": source}
-            if args.ca_file:
-                ssl.create_default_context(cafile=str(args.ca_file))
-                site["ca_file"] = str(args.ca_file.resolve())
-            if any(getattr(args, key) is not None for key in ("lan", "netbird", "port", "interface", "ssh", "host_key_file")):
-                backing = args.file or (Path(source) if Path(source).is_absolute() else None)
-                require(backing is not None, "HTTPS 清单请在管理端用 node 登记，或用 --file 指定可写的清单原文件")
-                print(f"{backing}  修订 {edit(backing, args)}")
-            write_json(args.deployment, site)
-            print(f"{args.name} 已登记，本机部署配置为 {args.deployment}")
-            setup_pull(args.deployment)
-            return
-        if args.action == "sync":
-            if args.setup:
-                setup_pull(args.deployment)
-            else:
-                topology = sync_site(args.deployment)
-                print(f"本机拓扑修订 {topology.get('revision', 0)}")
-            return
-        if not args.file:
-            parser.error("此操作需要 --file 指定管理端清单")
-        if args.action == "check":
-            with args.file.open("rb") as f:
-                rev = validate(read_json(f)).get("revision", 0)
-        else:
-            rev = edit(args.file, args)
-        print(f"{args.file}  修订 {rev}")
-    except (OSError, ValueError) as exc:
-        parser.exit(1, f"{exc}\n")
+    """Forward an older installed entry point to the unified CLI."""
+    from .__main__ import main as run
+    return run(legacy=True)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

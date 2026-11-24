@@ -22,7 +22,8 @@ class TopologyTest(unittest.TestCase):
         self.update("link", "a", "b", "--route", "lan-first")
 
     def update(self, *args, success=True):
-        proc = subprocess.run([sys.executable, "-m", "yazi_lan.topology", "--file", str(self.file), *args],
+        action, *options = args
+        proc = subprocess.run([sys.executable, "-m", "yazi_lan", "--" + action, *options, "--file", str(self.file)],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode == 0, success, proc.stderr)
         return proc
@@ -54,7 +55,7 @@ class TopologyTest(unittest.TestCase):
         self.assertEqual(self.file.read_bytes(), before)
 
     def test_concurrent_registrations_preserve_both_nodes(self):
-        base = [sys.executable, "-m", "yazi_lan.topology", "--file", str(self.file), "node"]
+        base = [sys.executable, "-m", "yazi_lan", "--file", str(self.file), "--node"]
         procs = [subprocess.Popen(base + [name, "--lan", ip], stdout=subprocess.DEVNULL)
                  for name, ip in (("c", "10.1.0.3"), ("d", "10.1.0.4"))]
         for proc in procs:

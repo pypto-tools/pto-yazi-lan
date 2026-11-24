@@ -10,40 +10,130 @@ from pathlib import Path
 from . import __version__
 from .access import check_directions
 from .connection import Peer, connect, remote_directory
-from .topology import DEPLOYMENT, load_site, public_key
+from .topology import DEPLOYMENT, ROUTES, load_site, manage, public_key
 from .ui import Browser, FILE_ERRORS
 
 
-def arguments():
-    cli = argparse.ArgumentParser(description="在本机和对端 SSH 服务器之间双向复制文件")
-    maintenance = cli.add_mutually_exclusive_group()
-    maintenance.add_argument("--update", action="store_true", help="将当前安装更新至最新发布版")
-    maintenance.add_argument("--sync", action="store_true", help="立即从中心同步本机的服务器列表")
-    cli.add_argument("--version", action="version", version=f"pto-yazi-lan {__version__}")
-    cli.add_argument("peer", nargs="?", help="对端配置名或 SSH 别名，省略时使用本机的对端列表")
-    cli.add_argument("--lan", help="对端的机房内网 IP")
-    cli.add_argument("--interface", help="本机的机房内网出口网卡")
-    cli.add_argument("--netbird", help="对端可用于回退的 NetBird IP")
-    cli.add_argument("--port", type=int, help="对端 SSH 端口")
-    cli.add_argument("--user", help="使用自己的密钥登录对端的指定账户，默认沿用 OpenSSH 设置")
-    cli.add_argument("--only-lan", action="store_true", help="本次仅使用内网")
-    cli.add_argument("--config", type=Path, help="服务器配置 JSON 文件")
-    cli.add_argument("--deployment", type=Path, help="本机部署配置，默认 /etc/yazi-lan/deployment.json")
-    cli.add_argument("--list", action="store_true", help="列出本机拓扑中的对端和路线")
-    cli.add_argument("--enable-plugin", action="store_true", help="为当前用户启用已安装的 Yazi 插件")
-    cli.add_argument("--ssh-config", help="OpenSSH 配置文件，默认使用系统 ssh 的配置")
-    cli.add_argument("--local-dir", default=".", help="本机的起始目录")
-    cli.add_argument("--remote-dir", help="对端的起始目录，默认登录目录")
-    cli.add_argument("--select", action="append", default=[], metavar="PATH", help="在左栏预选文件或目录")
-    cli.add_argument("--focus", help=argparse.SUPPRESS)
-    cli.add_argument("--check", action="store_true", help="验证 SSH 身份、线路和两栏目录的新建权限")
-    return cli.parse_args()
+NODE_OPTIONS = {"lan", "netbird", "interface", "port", "ssh", "host_key_file"}
+ADMIN_OPTIONS = {
+    "node": NODE_OPTIONS | {"file"},
+    "bind": NODE_OPTIONS | {"file", "source", "deployment", "ca_file"},
+    "link": {"file", "route"},
+    "unlink": {"file"},
+    "remove_node": {"file"},
+    "check_topology": {"file"},
+    "setup_sync": {"deployment"},
+}
+
+
+def legacy_options(cli, argv):
+    """Translate the old topology executable's command line into the public flags."""
+    head = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    head.add_argument("--file")
+    known, rest = head.parse_known_args(argv)
+    if not rest:
+        cli.error("请指定操作，运行 pto-yazi-lan --help 查看用法")
+    if rest[0] in ("-h", "--help"):
+        return ["--help"]
+    operation, *options = rest
+    if operation not in ("node", "bind", "link", "unlink", "remove-node", "check", "sync"):
+        cli.error(f"未知的拓扑操作 {operation}")
+    if operation == "check":
+        operation = "check-topology"
+    elif operation == "sync" and "--setup" in options:
+        operation = "setup-sync"
+        options.remove("--setup")
+    if known.file is not None and operation not in ("sync", "setup-sync"):
+        options.extend(["--file", known.file])
+    return ["--" + operation, *options]
+
+
+def arguments(legacy=False):
+    cli = argparse.ArgumentParser(
+        prog="pto-yazi-lan", allow_abbrev=False, add_help=False,
+        usage="%(prog)s [操作] [选项]", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="双向 SSH 文件传输与服务器拓扑管理。省略操作时，在终端选择对端。",
+        epilog="示例\n  pto-yazi-lan --sync --list\n  pto-yazi-lan --check --peer b\n"
+               "  pto-yazi-lan --check-topology --file /srv/yazi/topology.json")
+    actions = cli.add_argument_group("日常操作")
+    single = actions.add_mutually_exclusive_group()
+    single.add_argument("--update", action="store_true", help="升级程序")
+    single.add_argument("--sync", action="store_true", help="从中心同步服务器列表，可和 --list 合用")
+    actions.add_argument("--list", action="store_true", help="列出本机可连接的对端")
+    single.add_argument("--check", action="store_true", help="检查对端 SSH 认证、线路和两栏的目录权限")
+    single.add_argument("--enable-plugin", action="store_true", help="为当前用户启用 Yazi 插件")
+    actions.add_argument("--version", action="version", version=f"pto-yazi-lan {__version__}", help="查看程序版本")
+    actions.add_argument("-h", "--help", action="help", help="查看全部操作和选项")
+    single = cli.add_argument_group("节点与拓扑操作").add_mutually_exclusive_group()
+    single.add_argument("--node", metavar="NAME", help="在 --file 清单中新增或更新节点")
+    single.add_argument("--bind", metavar="NAME", help="将本机绑定到 --source 清单中的节点")
+    single.add_argument("--link", nargs=2, metavar=("A", "B"), help="在 --file 清单中按 --route 建立或更新双向连接")
+    single.add_argument("--unlink", nargs=2, metavar=("A", "B"), help="从 --file 清单移除双向连接")
+    single.add_argument("--remove-node", metavar="NAME", help="从 --file 清单移除节点及其连接")
+    single.add_argument("--check-topology", action="store_true", help="验证 --file 指定的中心拓扑清单")
+    single.add_argument("--setup-sync", action="store_true", help="设置整机定时同步并立即拉取清单")
+
+    connection = cli.add_argument_group("对端与传输选项")
+    connection.add_argument("--peer", metavar="NAME", help="直接选择对端，可写成 用户@节点")
+    cli.add_argument("positional_peer", nargs="?", help=argparse.SUPPRESS)
+    connection.add_argument("--user", help="使用自己的密钥登录对端的指定账户")
+    connection.add_argument("--only-lan", action="store_true", help="本次仅使用机房内网")
+    connection.add_argument("--config", type=Path, help="个人对端配置文件")
+    connection.add_argument("--ssh-config", help="OpenSSH 配置文件")
+    connection.add_argument("--local-dir", help="本机起始目录，默认当前目录")
+    connection.add_argument("--remote-dir", help="对端起始目录，默认登录目录")
+    connection.add_argument("--select", action="append", metavar="PATH", help="在左栏预选文件或目录，可重复")
+    connection.add_argument("--focus", metavar="PATH", help="打开面板时将左栏光标定位到指定文件")
+
+    endpoints = cli.add_argument_group("SSH 端点（连接对端或登记节点时使用）")
+    endpoints.add_argument("--lan", help="机房内网 IP")
+    endpoints.add_argument("--netbird", help="NetBird IP")
+    endpoints.add_argument("--interface", help="机房内网出口网卡")
+    endpoints.add_argument("--port", type=int, help="SSH 端口")
+    inventory = cli.add_argument_group("节点与拓扑选项")
+    inventory.add_argument("--file", type=Path, help="中心拓扑 JSON 原件")
+    inventory.add_argument("--source", "--topology", help="绑定时使用的 HTTPS 地址或本地绝对路径")
+    inventory.add_argument("--deployment", type=Path, help="本机登记文件，默认 /etc/yazi-lan/deployment.json")
+    inventory.add_argument("--ca-file", type=Path, help="中心 HTTPS 站点的私有 CA 文件")
+    inventory.add_argument("--route", choices=ROUTES, help="双向连接使用的线路策略")
+    inventory.add_argument("--ssh", help="登记节点使用的 OpenSSH 别名")
+    inventory.add_argument("--host-key-file", type=Path, help="已核对的节点 SSH 主机公钥文件")
+
+    argv = sys.argv[1:]
+    if legacy or Path(sys.argv[0]).name in ("pto-yazi-lan-topology", "yazi-lan-topology"):
+        argv = legacy_options(cli, argv)
+    args = cli.parse_args(argv)
+    positional = args.positional_peer
+    del args.positional_peer
+    if positional is not None:
+        if args.peer is not None:
+            cli.error("请只指定一个对端")
+        args.peer = positional
+    supplied = {key for key, value in vars(args).items() if value is not None and value is not False}
+    args.action = next((key for key in ADMIN_OPTIONS if key in supplied), None)
+    if args.action:
+        extra = supplied - {args.action} - ADMIN_OPTIONS[args.action]
+        if args.action not in ("bind", "setup_sync") and args.file is None:
+            cli.error("该操作需要 --file 指定中心拓扑清单")
+        if args.action == "bind" and args.source is None:
+            cli.error("--bind 需要 --source 指定清单地址")
+        if args.action == "link" and args.route is None:
+            cli.error("--link 需要 --route 指定线路策略")
+    else:
+        extra = supplied & {"file", "source", "ca_file", "route", "ssh", "host_key_file"}
+        if args.list and (args.check or args.enable_plugin or args.update):
+            cli.error("--list 可单独使用或与 --sync 合用")
+    if extra:
+        cli.error("当前操作不接受 " + "、".join("--" + key.replace("_", "-") for key in sorted(extra)))
+    args.local_dir = "." if args.local_dir is None else args.local_dir
+    args.select = args.select or []
+    return args
 
 
 def choose_peer(profiles, conf):
     names = sorted(profiles)
     if not names:
-        raise ValueError(f"请在 {conf} 中添加对端，或运行 pto-yazi-lan <对端> --lan IP --interface 网卡")
+        raise ValueError(f"请在 {conf} 中添加对端，或运行 pto-yazi-lan --peer <对端> --lan IP --interface 网卡")
     if len(names) == 1:
         return names[0]
     if not sys.stdin.isatty():
@@ -140,9 +230,12 @@ def profile(args, previous=None):
                 args.ssh_config or saved.get("ssh_config"), port), args.remote_dir or saved.get("remote_dir", "."), name, ""
 
 
-def main():
-    args = arguments()
+def main(*, legacy=False):
+    args = arguments(legacy=legacy)
     try:
+        if args.action:
+            manage(args)
+            return 0
         if args.update:
             from .update import update
             return update()

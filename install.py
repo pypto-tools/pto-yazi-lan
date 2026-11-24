@@ -11,13 +11,13 @@ import tempfile
 from pathlib import Path
 
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 WHEEL = f"pto_yazi_lan-{VERSION}-py3-none-any.whl"
 RELEASE = f"https://github.com/pypto-tools/pto-yazi-lan/releases/download/v{VERSION}"
 SYSTEM_ROOT = Path("/usr/local/lib/pto-yazi-lan")
 SYSTEM_BIN = Path("/usr/local/bin")
 SITE_FILE = Path("/etc/yazi-lan/deployment.json")
-COMMANDS = ("pto-yazi-lan", "pto-yazi-lan-topology", "yazi-lan", "yazi-lan-topology")
+LEGACY_NAMES = ("pto-yazi-lan-topology", "yazi-lan", "yazi-lan-topology")
 
 
 def link_if_free(link, target):
@@ -31,7 +31,7 @@ def link_if_free(link, target):
 def install_environment(env, package):
     python = env / "bin/python"
     command = env / "bin/pto-yazi-lan"
-    if python.is_file() and all(os.access(env / "bin" / name, os.X_OK) for name in COMMANDS):
+    if python.is_file() and os.access(command, os.X_OK):
         probe = subprocess.run([command, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if probe.returncode == 0:
             return
@@ -88,14 +88,19 @@ def main():
                     and tuple(map(int, current.name.split("."))) >= tuple(map(int, VERSION.split(".")))):
                 print(f"已安装 pto-yazi-lan {current.name}。")
                 return
-        for name in COMMANDS:
-            path, entry = bindir / name, active / "bin" / name
-            if os.path.lexists(path) and not (path.is_symlink() and path.readlink() == entry):
-                sys.exit(f"{path} 已由其他安装占用。请先确认已有入口。")
+        entry = active / "bin" / command.name
+        if os.path.lexists(command) and not (command.is_symlink() and command.readlink() == entry):
+            sys.exit(f"{command} 已由其他安装占用。请先确认已有入口。")
         if active.exists() and not active.is_symlink():
             sys.exit(f"{active} 已被占用。请先确认其内容。")
         package = args.wheel.resolve() if args.wheel else f"{RELEASE}/{WHEEL}"
         install_environment(env, package)
+        # Older managed installs may have public links used by scripts or timers.
+        for name in LEGACY_NAMES:
+            old = bindir / name
+            if old.is_symlink() and old.readlink() == active / "bin" / name:
+                if not link_if_free(env / "bin" / name, Path(command.name)):
+                    sys.exit(f"无法保留旧入口，{env / 'bin' / name} 已被占用。")
         # A venv's scripts use absolute shebangs. Switch the link after the install succeeds.
         with tempfile.TemporaryDirectory(dir=root) as tmp:
             if not args.system:
@@ -105,16 +110,14 @@ def main():
             candidate = Path(tmp) / "current"
             candidate.symlink_to(env)
             candidate.replace(active)
-        for name in COMMANDS:
-            if not link_if_free(bindir / name, active / "bin" / name):
-                sys.exit(f"无法安装命令，{bindir / name} 已被占用。")
-        manager = bindir / "pto-yazi-lan-topology"
+        if not link_if_free(command, entry):
+            sys.exit(f"无法安装命令，{command} 已被占用。")
         if args.node:
             registry = ["--file", args.registry_file] if args.registry_file else []
-            subprocess.run([manager, *registry, "bind", args.node, "--source",
+            subprocess.run([command, *registry, "--bind", args.node, "--source",
                             args.topology, "--deployment", SITE_FILE, *options], check=True)
         elif args.system and SITE_FILE.exists():
-            subprocess.run([manager, "sync", "--setup", "--deployment", SITE_FILE], check=True)
+            subprocess.run([command, "--setup-sync", "--deployment", SITE_FILE], check=True)
         elif not args.system:
             subprocess.run([command, "--enable-plugin"], check=True)
 

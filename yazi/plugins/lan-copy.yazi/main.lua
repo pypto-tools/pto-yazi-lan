@@ -20,7 +20,10 @@ function M:entry(job)
 		return ya.notify { title = "pto-yazi-lan", content = "请从本机目录打开传输面板", timeout = 5, level = "warn" }
 	end
 	local args = { "--local-dir", cwd }
-	if job.args[1] then args[#args + 1] = job.args[1] end
+	if job.args[1] then
+		args[#args + 1] = "--peer"
+		args[#args + 1] = job.args[1]
+	end
 	if focus then
 		args[#args + 1] = "--focus"
 		args[#args + 1] = focus

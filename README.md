@@ -2,18 +2,30 @@
 
 在 A 和 B 上安装同一个程序，就能从任意一台发起复制。左栏始终是当前登录的机器，右栏是选中的对端。在哪一栏选文件或目录，就从哪一栏按 `F5` 复制到另一栏的当前目录。
 
-## 常用命令
+## 命令速查
 
-```bash
-pto-yazi-lan --update    # 升级这台机器上的程序
-pto-yazi-lan --sync      # 立即从中心拉取服务器列表
-pto-yazi-lan --list      # 查看本机已同步的对端
-pto-yazi-lan             # 选择对端并打开传输面板
-```
+新安装只需记住一个命令 `pto-yazi-lan`。不加参数会在终端选择对端并打开双栏面板。
 
-从 0.5.0 起，个人安装和整机安装都可以用同一条更新命令。已是最新发布版时会显示当前版本。整机安装有新版时按需调用 `sudo`，个人安装和虚拟环境在原位置升级。`pto-yazi-lan --version` 可查看程序版本。整机节点的服务器列表仍默认每分钟自动同步。
+| 日常操作 | 命令 |
+| --- | --- |
+| 查看可连接的服务器 | `pto-yazi-lan --list` |
+| 立即同步并查看新列表 | `pto-yazi-lan --sync --list` |
+| 打开指定对端 | `pto-yazi-lan --peer b` |
+| 检查 SSH、线路和目录权限 | `pto-yazi-lan --check --peer b` |
+| 为当前账户启用 Yazi 插件 | `pto-yazi-lan --enable-plugin` |
+| 升级程序 / 查看版本 / 查看完整帮助 | `--update` / `--version` / `--help` |
 
-0.4.0 及更早版本首次升级需要再运行一次原来的一键安装命令，整机安装加 `--system`，已有节点可沿用原登记。旧命令 `yazi-lan` 和 `yazi-lan-topology` 继续可用。
+| 节点和拓扑操作 | 在 `pto-yazi-lan` 后填写 |
+| --- | --- |
+| 中心新增节点或更新其地址、端口 | `--node NAME --file FILE`，按需加 `--lan`、`--netbird`、`--port` 等 |
+| 建立或更新双向连接 | `--link A B --route lan-first --file FILE` |
+| 移除双向连接 | `--unlink A B --file FILE` |
+| 下线节点并移除其连接 | `--remove-node NAME --file FILE` |
+| 校验中心清单 | `--check-topology --file FILE` |
+| 在传输服务器上登记本机身份和清单来源 | `--bind NAME --source URL或绝对路径` |
+| 重新设置本机的定时同步并立即拉取 | `--setup-sync` |
+
+整机安装默认每分钟同步一次。当前账户需要立即刷新时可运行 `pto-yazi-lan --sync`。0.5.0 起可直接运行 `pto-yazi-lan --update` 升级程序，整机更新需要额外权限时会调用 `sudo`。0.4.0 及更早版本首次升级需再运行一次原安装命令。一键安装器会为已有安装保留其原先创建的旧命令链接，现有脚本可以继续运行。新脚本统一使用上表的参数。
 
 ## 管理员部署与更新拓扑
 
@@ -29,9 +41,9 @@ pto-yazi-lan             # 选择对端并打开传输面板
 
 ```bash
 curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/install.py | sudo python3 - --system
-sudo pto-yazi-lan-topology --file /srv/yazi/topology.json node a --lan 10.20.0.11 --netbird 100.80.0.11 --port 22
-sudo pto-yazi-lan-topology --file /srv/yazi/topology.json node b --lan 10.20.0.22 --netbird 100.80.0.22 --port 2222
-sudo pto-yazi-lan-topology --file /srv/yazi/topology.json link a b --route lan-first
+sudo pto-yazi-lan --node a --file /srv/yazi/topology.json --lan 10.20.0.11 --netbird 100.80.0.11 --port 22
+sudo pto-yazi-lan --node b --file /srv/yazi/topology.json --lan 10.20.0.22 --netbird 100.80.0.22 --port 2222
+sudo pto-yazi-lan --link a b --file /srv/yazi/topology.json --route lan-first
 ```
 
 登记节点时，可加 `--host-key-file /path/to/node-host-key.pub` 指定已核对的该节点 SSH 主机公钥，也可用 `--interface eno1` 指定机房出口网卡。省略网卡时程序按本机登记的机房 IP 查找出口。
@@ -44,14 +56,20 @@ curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/
 pto-yazi-lan --list
 ```
 
-整机安装会立即拉取一次，并启用 `pto-yazi-lan-sync.timer`，默认每分钟检查一次。没有运行 systemd 的机器可使用安装器生成的 cron 任务，由已启动的 cron 服务执行。使用其他作业管理器时，可安排每分钟运行 `/usr/local/bin/pto-yazi-lan-topology sync`。已用 0.3.0 登记中心 URL 的机器，重新执行整机安装命令并加 `--system` 即可沿用原登记并启用同步。
+程序已安装时，可以直接登记或更改本机绑定。把 `a` 和示例 URL 换成本机的节点名和实际清单地址。
+
+```bash
+sudo pto-yazi-lan --bind a --source https://netbird-center.example.org/yazi/topology.json
+```
+
+整机安装会立即拉取一次，并启用 `pto-yazi-lan-sync.timer`，默认每分钟检查一次。没有运行 systemd 的机器可使用安装器生成的 cron 任务，由已启动的 cron 服务执行。使用其他作业管理器时，可安排每分钟运行 `/usr/local/bin/pto-yazi-lan --sync`。已用 0.3.0 登记中心 URL 的机器，重新执行整机安装命令并加 `--system` 即可沿用原登记并启用同步。
 
 **变更和断网。** 例如在中心修改 B 的端口，各节点下次同步后，用户用 `pto-yazi-lan --list` 可看到新端口和修订号，面板按 `r` 按新配置重连。已建立的 SSH 会话继续当前传输。中心不可达、证书校验失败或新文件内容无效时保留旧副本，下一轮会重试。首次需要成功拉取一次。节点离线期间，新增或移除的连接会在恢复同步后生效。
 
 ```bash
 # 在中心更新
-sudo pto-yazi-lan-topology --file /srv/yazi/topology.json node b --port 2223
-sudo pto-yazi-lan-topology --file /srv/yazi/topology.json check
+sudo pto-yazi-lan --node b --file /srv/yazi/topology.json --port 2223
+sudo pto-yazi-lan --check-topology --file /srv/yazi/topology.json
 
 # 在任意已部署的节点立即拉取或查看定时任务
 pto-yazi-lan --sync
@@ -64,12 +82,12 @@ journalctl -u pto-yazi-lan-sync.service -n 10
 | `lan-first` | 优先验证机房路由，线路不可达时使用双方已登记的 NetBird 地址 |
 | `lan-only` | 限定机房内网 |
 | `netbird-only` | 限定 NetBird |
-| `unlink a b` | 从双方的面板移除这条连接，下次重连生效 |
-| `remove-node b` | 下线 B，并在同一次更新中删除它的所有连接 |
+| `--unlink a b` | 从双方的面板移除这条连接，下次重连生效 |
+| `--remove-node b` | 下线 B，并在同一次更新中删除它的所有连接 |
 
 **已有共享清单的部署。** `--topology /mnt/ops/yazi-topology.json` 会直接读取指定文件，适用于共享磁盘或已有的配置分发工具。部署账户对原件有写权限时，可在 `--system --node a` 安装命令里附加 `--lan`、`--netbird`、`--port` 等参数一并登记本机。HTTPS 接入时，管理员在中心原件上登记和更改节点。单独指定 `--deployment /path/to/site.json` 的独立客户端会在打开或重连时尝试更新，并将副本存入同目录的 `site.json.d/topology.json`。
 
-管理命令会校验整份清单、原子更新文件，并在实际修改时增加 `revision`。也可以在管理端编辑以下格式的 JSON，发布前用 `pto-yazi-lan-topology --file 文件 check` 验证。
+管理命令会校验整份清单、原子更新文件，并在实际修改时增加 `revision`。也可以在管理端编辑以下格式的 JSON，发布前用 `pto-yazi-lan --check-topology --file 文件` 验证。
 
 ```json
 {
@@ -83,9 +101,9 @@ journalctl -u pto-yazi-lan-sync.service -n 10
 }
 ```
 
-**用户认证和目录权限。** `pto-yazi-lan b` 使用当前用户的 OpenSSH 配置和密钥，通常登录对端的同名账户。`pto-yazi-lan b --user backup` 可以使用另一个已授权账户。管理员登记了 `host_key` 时，内网与 NetBird 均严格核对该公钥。省略时使用 OpenSSH 已信任的主机密钥或 SSH CA。若目标 SSH 服务拒绝当前密钥，面板会报告认证失败。拓扑连接控制应用的对端选择，实际网络访问和文件权限由防火墙、SSH 服务和文件系统管理。
+**用户认证和目录权限。** `pto-yazi-lan --peer b` 使用当前用户的 OpenSSH 配置和密钥，通常登录对端的同名账户。`pto-yazi-lan --peer b --user backup` 可以使用另一个已授权账户。管理员登记了 `host_key` 时，内网与 NetBird 均严格核对该公钥。省略时使用 OpenSSH 已信任的主机密钥或 SSH CA。若目标 SSH 服务拒绝当前密钥，面板会报告认证失败。拓扑连接控制应用的对端选择，实际网络访问和文件权限由防火墙、SSH 服务和文件系统管理。
 
-面板打开时会列举两栏目录，并在各自目录里独占新建、随即删除一个空的 `.pto-yazi-lan-check-*` 文件，分别显示能否接收文件。进入其他目录后，在确认复制时检查所选目标。也可以运行 `pto-yazi-lan b --check --local-dir /data/in --remote-dir /data/out`。两端检查都通过时退出码为 0，只读目录会单独报告。具体源文件可读性和同名文件覆盖权限以实际操作为准。B 上的用户发起传输时，使用 B 上该用户自己的凭据独立验证。
+面板打开时会列举两栏目录，并在各自目录里独占新建、随即删除一个空的 `.yazi-lan-check-*` 文件，分别显示能否接收文件。进入其他目录后，在确认复制时检查所选目标。也可以运行 `pto-yazi-lan --peer b --check --local-dir /data/in --remote-dir /data/out`。两端检查都通过时退出码为 0，只读目录会单独报告。具体源文件可读性和同名文件覆盖权限以实际操作为准。B 上的用户发起传输时，使用 B 上该用户自己的凭据独立验证。
 
 整机部署后用户可直接运行 `pto-yazi-lan`。要接入自己的 Yazi 快捷键，执行一次 `pto-yazi-lan --enable-plugin`。
 
@@ -101,7 +119,7 @@ curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/
 
 Yazi 插件默认装到 `~/.config/yazi/plugins/lan-copy.yazi`，也支持 `YAZI_CONFIG_HOME` 和 `XDG_CONFIG_HOME`。首次安装会为新配置绑定 `F5`。已有的插件或快捷键文件会保留，下面的快捷键示例可用于合并自定义配置。
 
-也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.5.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
+也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.6.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
 
 ## 从源码安装
 
@@ -113,7 +131,7 @@ source ~/.local/share/yazi-lan/venv/bin/activate
 python -m pip install .
 ```
 
-也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.5.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.5.0-py3-none-any.whl`。
+也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.6.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.6.0-py3-none-any.whl`。
 
 两台机器都需要 Linux、Python 3.9 及以上、OpenSSH 客户端、iproute2，以及对方可访问的 SSH/SFTP 服务。两端装有 rsync 3.1 及以上时会使用 rsync。独立双栏面板可直接运行，从 Yazi 按 `F5` 打开需要本机装有兼容的 Yazi（已验证 26.9.1）。
 
@@ -152,14 +170,14 @@ Host server-b
 
 ## 在任意一端发起复制
 
-在 A 或 B 上都可以运行相同的命令。只配置一个对端时自动选中，配置多个时可在终端按编号选择，也可以直接运行 `pto-yazi-lan server-b` 或 `pto-yazi-lan server-a`。
+在 A 或 B 上都可以运行相同的命令。只配置一个对端时自动选中，配置多个时可在终端按编号选择，也可以直接运行 `pto-yazi-lan --peer server-b` 或 `pto-yazi-lan --peer server-a`。
 
 ```bash
 pto-yazi-lan --check
 pto-yazi-lan
 ```
 
-也可以直接用命令行指定线路，例如在 B 上运行 `pto-yazi-lan server-a --lan 10.20.0.11 --interface ens192`。
+也可以直接用命令行指定线路，例如在 B 上运行 `pto-yazi-lan --peer server-a --lan 10.20.0.11 --interface ens192`。
 
 例如在 B 上启动，左栏勾选 `checkpoints/`，右栏进入 A 的 `/data/incoming`。从左栏按 `F5` 和回车，目标是 A 上的 `/data/incoming/checkpoints/`。从右栏发起则会拉取到 B。另一台只需保持 SSH/SFTP 可达，传输面板可以关闭。
 

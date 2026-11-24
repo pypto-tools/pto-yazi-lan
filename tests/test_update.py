@@ -100,4 +100,4 @@ class UpdateTest(unittest.TestCase):
             self.assertEqual(self.invoke("--sync", "--deployment", str(self.root / "custom")), 1)
             self.run.assert_not_called()
             self.assertEqual(self.invoke("--sync"), 0)
-        self.run.assert_called_once_with(["sudo", "--", "/usr/local/bin/pto-yazi-lan-topology", "sync"])
+        self.run.assert_called_once_with(["sudo", "--", "/usr/local/bin/pto-yazi-lan", "--sync"])
