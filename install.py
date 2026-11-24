@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 import site
 import subprocess
 import sys
@@ -10,12 +11,13 @@ import tempfile
 from pathlib import Path
 
 
-VERSION = "0.4.0"
-WHEEL = f"yazi_lan-{VERSION}-py3-none-any.whl"
+VERSION = "0.5.0"
+WHEEL = f"pto_yazi_lan-{VERSION}-py3-none-any.whl"
 RELEASE = f"https://github.com/pypto-tools/pto-yazi-lan/releases/download/v{VERSION}"
 SYSTEM_ROOT = Path("/usr/local/lib/pto-yazi-lan")
 SYSTEM_BIN = Path("/usr/local/bin")
 SITE_FILE = Path("/etc/yazi-lan/deployment.json")
+COMMANDS = ("pto-yazi-lan", "pto-yazi-lan-topology", "yazi-lan", "yazi-lan-topology")
 
 
 def link_if_free(link, target):
@@ -28,8 +30,8 @@ def link_if_free(link, target):
 
 def install_environment(env, package):
     python = env / "bin/python"
-    command = env / "bin/yazi-lan"
-    if all(os.access(p, os.X_OK) for p in (python, command, env / "bin/yazi-lan-topology")):
+    command = env / "bin/pto-yazi-lan"
+    if python.is_file() and all(os.access(env / "bin" / name, os.X_OK) for name in COMMANDS):
         probe = subprocess.run([command, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if probe.returncode == 0:
             return
@@ -47,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wheel", type=Path, help="使用已下载的本版本 wheel 文件")
     parser.add_argument("--system", action="store_true", help="在 /usr/local 为本机所有账户安装")
+    parser.add_argument("--upgrade", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--node", help="中央拓扑中的本机名称")
     parser.add_argument("--topology", help="中央拓扑的 HTTPS 地址或绝对路径")
     parser.add_argument("--registry-file", help="可写的中央清单原文件，用于部署时登记本机")
@@ -72,14 +75,20 @@ def main():
         bindir = Path(site.getuserbase()) / "bin"
     root = root.absolute()
     active = root / "current"
-    command = bindir / "yazi-lan"
-    names = ("yazi-lan", "yazi-lan-topology")
+    command = bindir / "pto-yazi-lan"
     env = root / "versions" / VERSION
     root.mkdir(parents=True, exist_ok=True)
     bindir.mkdir(parents=True, exist_ok=True)
     with (root / "install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        for name in names:
+        if args.upgrade and active.is_symlink():
+            current = active.resolve()
+            if (current.parent == env.parent.resolve() and current.is_dir()
+                    and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", current.name)
+                    and tuple(map(int, current.name.split("."))) >= tuple(map(int, VERSION.split(".")))):
+                print(f"已安装 pto-yazi-lan {current.name}。")
+                return
+        for name in COMMANDS:
             path, entry = bindir / name, active / "bin" / name
             if os.path.lexists(path) and not (path.is_symlink() and path.readlink() == entry):
                 sys.exit(f"{path} 已由其他安装占用。请先确认已有入口。")
@@ -89,13 +98,17 @@ def main():
         install_environment(env, package)
         # A venv's scripts use absolute shebangs. Switch the link after the install succeeds.
         with tempfile.TemporaryDirectory(dir=root) as tmp:
+            if not args.system:
+                userbase = Path(tmp) / "userbase"
+                userbase.write_text(str(bindir.absolute().parent), encoding="utf-8")
+                userbase.replace(env / "pto-yazi-lan-userbase")
             candidate = Path(tmp) / "current"
             candidate.symlink_to(env)
             candidate.replace(active)
-        for name in names:
+        for name in COMMANDS:
             if not link_if_free(bindir / name, active / "bin" / name):
                 sys.exit(f"无法安装命令，{bindir / name} 已被占用。")
-        manager = bindir / "yazi-lan-topology"
+        manager = bindir / "pto-yazi-lan-topology"
         if args.node:
             registry = ["--file", args.registry_file] if args.registry_file else []
             subprocess.run([manager, *registry, "bind", args.node, "--source",
@@ -105,9 +118,9 @@ def main():
         elif not args.system:
             subprocess.run([command, "--enable-plugin"], check=True)
 
-    print(f"已安装 yazi-lan {VERSION}。运行 {command} --help 查看用法。")
+    print(f"已安装 pto-yazi-lan {VERSION}。以后运行 pto-yazi-lan --update 即可更新。")
     if str(bindir) not in os.get_exec_path():
-        print(f"请将 {bindir} 加入 PATH，以便在终端及 Yazi 中使用 yazi-lan。")
+        print(f"请将 {bindir} 加入 PATH，以便在终端及 Yazi 中使用 pto-yazi-lan。")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ ConditionPathExists=/etc/yazi-lan/deployment.json
 [Service]
 Type=oneshot
 TimeoutStartSec=45s
-ExecStart=/usr/local/bin/yazi-lan-topology sync
+ExecStart=/usr/local/bin/pto-yazi-lan-topology sync
 StateDirectory=yazi-lan
 StateDirectoryMode=0755
 ProtectSystem=strict

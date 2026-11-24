@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import __version__
 from .access import check_directions
 from .connection import Peer, connect, remote_directory
 from .topology import DEPLOYMENT, load_site, public_key
@@ -15,6 +16,10 @@ from .ui import Browser, FILE_ERRORS
 
 def arguments():
     cli = argparse.ArgumentParser(description="在本机和对端 SSH 服务器之间双向复制文件")
+    maintenance = cli.add_mutually_exclusive_group()
+    maintenance.add_argument("--update", action="store_true", help="将当前安装更新至最新发布版")
+    maintenance.add_argument("--sync", action="store_true", help="立即从中心同步本机的服务器列表")
+    cli.add_argument("--version", action="version", version=f"pto-yazi-lan {__version__}")
     cli.add_argument("peer", nargs="?", help="对端配置名或 SSH 别名，省略时使用本机的对端列表")
     cli.add_argument("--lan", help="对端的机房内网 IP")
     cli.add_argument("--interface", help="本机的机房内网出口网卡")
@@ -38,7 +43,7 @@ def arguments():
 def choose_peer(profiles, conf):
     names = sorted(profiles)
     if not names:
-        raise ValueError(f"请在 {conf} 中添加对端，或运行 yazi-lan <对端> --lan IP --interface 网卡")
+        raise ValueError(f"请在 {conf} 中添加对端，或运行 pto-yazi-lan <对端> --lan IP --interface 网卡")
     if len(names) == 1:
         return names[0]
     if not sys.stdin.isatty():
@@ -61,7 +66,7 @@ def choose_peer(profiles, conf):
 def managed_profile(args, deployment, requested):
     if any(value is not None for value in (args.config, args.lan, args.netbird, args.interface, args.port)):
         raise ValueError("本机已登记，地址、端口和线路由管理端拓扑统一配置。")
-    local, topology, neighbors = load_site(deployment)
+    local, topology, neighbors = load_site(deployment, refresh=not args.sync)
     nodes = topology["nodes"]
     revision = f"拓扑 {topology.get('revision', 0)}"
     if args.list:
@@ -138,6 +143,14 @@ def profile(args, previous=None):
 def main():
     args = arguments()
     try:
+        if args.update:
+            from .update import update
+            return update()
+        if args.sync:
+            from .topology import sync_now
+            result = sync_now(args.deployment or DEPLOYMENT)
+            if result or not args.list:
+                return result
         if args.enable_plugin:
             from .plugin import enable_plugin
             enable_plugin()
@@ -174,7 +187,7 @@ def main():
     except KeyboardInterrupt:
         return 130
     except (*FILE_ERRORS, subprocess.SubprocessError, curses.error) as exc:
-        print(f"yazi-lan: {exc}", file=sys.stderr)
+        print(f"pto-yazi-lan: {exc}", file=sys.stderr)
         return 1
 
 

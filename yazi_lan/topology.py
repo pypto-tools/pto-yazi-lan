@@ -113,7 +113,7 @@ def source_location(source):
 
 class SecureRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        require(urlsplit(newurl).scheme == "https", "拓扑重定向需要 HTTPS")
+        require(urlsplit(newurl).scheme == "https", "重定向需要 HTTPS")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -204,7 +204,7 @@ def sync_site(path):
         return topology
 
 
-def load_site(path):
+def load_site(path, *, refresh=True):
     site = read_binding(path)
     source = Path(site["topology"])
     if source.is_absolute():
@@ -212,7 +212,7 @@ def load_site(path):
             topology = validate(read_json(f))
     else:
         dest = snapshot_path(path)
-        if not system_binding(path):
+        if refresh and not system_binding(path):
             # Standalone bindings have no system timer. Refresh them on open and reconnect.
             try:
                 sync_site(path)
@@ -222,7 +222,7 @@ def load_site(path):
         try:
             topology, _ = read_snapshot(dest, site)
         except (OSError, ValueError, RecursionError) as exc:
-            command = "yazi-lan-topology sync"
+            command = "pto-yazi-lan --sync"
             if not system_binding(path):
                 command += " --deployment " + shlex.quote(str(path))
             raise ValueError(f"没有可用的本地拓扑 {dest}，请运行 {command}（{exc}）") from exc
@@ -321,13 +321,34 @@ def setup_pull(path):
         try:
             print(schedule.enable())
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            print(f"未能启用自动同步（{exc}）。可安排每分钟以管理员身份运行 yazi-lan-topology sync。",
+            print(f"未能启用自动同步（{exc}）。可安排每分钟以管理员身份运行 pto-yazi-lan-topology sync。",
                   file=sys.stderr)
     try:
         topology = sync_site(path)
         print(f"{snapshot_path(path)}  修订 {topology.get('revision', 0)}")
     except (OSError, ValueError) as exc:
         print(f"本次未能同步（{exc}）。已有的有效副本可继续使用。首次接入需要成功拉取一次。", file=sys.stderr)
+
+
+def sync_now(path):
+    try:
+        topology = sync_site(path)
+    except FileNotFoundError:
+        if not path.exists():
+            raise ValueError(f"本机尚未登记中心清单（{path}），请先在整机安装时指定 --node 和 --topology。") from None
+        raise
+    except PermissionError:
+        if not system_binding(path) or os.geteuid() == 0:
+            raise
+        # Elevate the system installation, never a program or binding supplied by the user.
+        for name in ("pto-yazi-lan-topology", "yazi-lan-topology"):
+            manager = Path("/usr/local/bin") / name
+            if manager.is_file():
+                print("更新整机共享清单需要管理员权限，正在调用 sudo。", flush=True)
+                return subprocess.run(["sudo", "--", str(manager), "sync"]).returncode
+        raise
+    print(f"本机拓扑修订 {topology.get('revision', 0)}")
+    return 0
 
 
 def main():
