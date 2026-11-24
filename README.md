@@ -27,6 +27,14 @@
 
 整机安装默认每分钟同步一次。当前账户需要立即刷新时可运行 `pto-yazi-lan --sync`。0.5.0 起可直接运行 `pto-yazi-lan --update` 升级程序，整机更新需要额外权限时会调用 `sudo`。0.4.0 及更早版本首次升级需再运行一次原安装命令。一键安装器会为已有安装保留其原先创建的旧命令链接，现有脚本可以继续运行。新脚本统一使用上表的参数。
 
+从 0.7.0 整机升级后，如果命令报 `bad interpreter: Too many levels of symbolic links`，可用旧版的固定路径安装修复版。请在该机器上执行：
+
+```bash
+sudo /usr/local/lib/pto-yazi-lan/versions/0.7.0/bin/python -I -m yazi_lan --update &&
+  /usr/local/bin/pto-yazi-lan --version
+```
+
+
 ## 管理员部署与更新拓扑
 
 可以用现有的 NetBird 中心服务器发布拓扑。A、B 各自通过 HTTPS 拉取，在本机保存一份供所有账户读取的副本。用户从任一端发起复制时，文件经 SSH 在 A 和 B 之间传输，优先使用拓扑允许的机房内网。
@@ -119,7 +127,7 @@ curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/
 
 Yazi 插件默认装到 `~/.config/yazi/plugins/lan-copy.yazi`，也支持 `YAZI_CONFIG_HOME` 和 `XDG_CONFIG_HOME`。首次安装会为新配置绑定 `F5`。已有的插件或快捷键文件会保留，下面的快捷键示例可用于合并自定义配置。
 
-也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.8.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
+也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.8.1-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
 
 ## 从源码安装
 
@@ -131,7 +139,7 @@ source ~/.local/share/yazi-lan/venv/bin/activate
 python -m pip install .
 ```
 
-也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.8.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.8.0-py3-none-any.whl`。
+也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.8.1-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.8.1-py3-none-any.whl`。
 
 两台机器都需要 Linux、Python 3.9 及以上、OpenSSH 客户端、iproute2，以及对方可访问的 SSH/SFTP 服务。两端装有 rsync 3.1 及以上时会使用 rsync。独立双栏面板可直接运行，从 Yazi 按 `F5` 打开需要本机装有兼容的 Yazi（已验证 26.9.1）。
 

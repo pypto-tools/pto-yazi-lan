@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 WHEEL = f"pto_yazi_lan-{VERSION}-py3-none-any.whl"
 RELEASE = f"https://github.com/pypto-tools/pto-yazi-lan/releases/download/v{VERSION}"
 SYSTEM_ROOT = Path("/usr/local/lib/pto-yazi-lan")
@@ -35,7 +35,10 @@ def install_environment(env, package):
         probe = subprocess.run([command, "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if probe.returncode == 0:
             return
-    subprocess.run([sys.executable, "-I", "-m", "venv", env], check=True)
+    # The updater may be running as current/bin/python. That alias changes
+    # during activation, so the new environment must own its interpreter.
+    base_python = Path(sys._base_executable).resolve(strict=True)
+    subprocess.run([base_python, "-I", "-m", "venv", "--copies", env], check=True)
     subprocess.run([python, "-I", "-m", "pip", "--disable-pip-version-check",
                     "install", "--force-reinstall", package], check=True)
     subprocess.run([command, "--help"], stdout=subprocess.DEVNULL, check=True)
@@ -109,7 +112,18 @@ def main():
                 userbase.replace(env / "pto-yazi-lan-userbase")
             candidate = Path(tmp) / "current"
             candidate.symlink_to(env)
+            previous = Path(tmp) / "previous"
+            if active.is_symlink():
+                previous.symlink_to(active.readlink())
             candidate.replace(active)
+            try:
+                subprocess.run([entry, "--version"], check=True, stdout=subprocess.DEVNULL)
+            except (OSError, subprocess.CalledProcessError):
+                if previous.is_symlink():
+                    previous.replace(active)
+                else:
+                    active.unlink()
+                raise
         if not link_if_free(command, entry):
             sys.exit(f"无法安装命令，{command} 已被占用。")
         if args.node:

@@ -1,6 +1,8 @@
+import errno
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -8,8 +10,38 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import install
 from yazi_lan import __main__ as client
 from yazi_lan import topology, update
+
+
+class InstallerTest(unittest.TestCase):
+    def test_failed_activation_restores_previous_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lib"
+            active = root / "current"
+            old = root / "versions/0.7.0"
+            (old / "bin").mkdir(parents=True)
+            (old / "bin/python").symlink_to(sys.executable)
+            active.symlink_to(old)
+
+            def make_bad_environment(env, package):
+                (env / "bin").mkdir(parents=True)
+                (env / "bin/python").symlink_to(active / "bin/python")
+                command = env / "bin/pto-yazi-lan"
+                command.write_text(f"#!{env}/bin/python\nprint('ready')\n")
+                command.chmod(0o755)
+                self.assertEqual(subprocess.check_output([command], text=True).strip(), "ready")
+
+            with patch.object(install, "SYSTEM_ROOT", root), \
+                 patch.object(install, "SYSTEM_BIN", Path(tmp) / "bin"), \
+                 patch.object(install, "install_environment", make_bad_environment), \
+                 patch.object(install.os, "umask"), \
+                 patch.object(sys, "argv", ["install.py", "--system", "--upgrade"]):
+                with self.assertRaises(OSError) as error:
+                    install.main()
+            self.assertEqual(error.exception.errno, errno.ELOOP)
+            self.assertEqual(active.resolve(), old)
 
 
 class UpdateTest(unittest.TestCase):
