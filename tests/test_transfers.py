@@ -139,3 +139,27 @@ class TransferTest(unittest.TestCase):
         path.write_text("第一行\n第二行\n")
         with transfer_session(self.session) as session:
             self.assertEqual(preview(str(path), session.sftp), ["第一行", "第二行"])
+
+    def test_text_encodings_and_multibyte_boundary(self):
+        path = self.root / "training.log"
+        text = "训练日志\r\n第二行"
+        for codec in ("utf-8-sig", "utf-16", "utf-32", "gbk", "gb18030"):
+            with self.subTest(codec=codec):
+                path.write_bytes(text.encode(codec))
+                self.assertEqual(preview(str(path)), text.splitlines())
+        path.write_bytes(("x" * (LIMIT - 1) + "好").encode("gbk"))
+        self.assertEqual(preview(str(path)), ["x" * (LIMIT - 1)])
+        for codec in ("utf-16-le", "utf-16-be"):
+            path.write_bytes("INFO sample".encode(codec))
+            self.assertEqual(preview(str(path)), ["INFO sample"])
+
+    def test_recognized_binary_formats_and_random_data(self):
+        import zipfile
+        path = self.root / "sample"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("目录/note.md", "hello")
+        self.assertIn("首个条目  目录/note.md", preview(str(path)))
+        path.write_bytes(b"GIF89a\x10\x00\x20\x00" + bytes(10))
+        self.assertIn("16 × 32 像素", preview(str(path)))
+        path.write_bytes(b"\xff\x00\x01\x02")
+        self.assertIn("二进制", preview(str(path))[0])

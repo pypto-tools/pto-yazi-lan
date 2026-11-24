@@ -78,6 +78,7 @@ def arguments(legacy=False):
     cli.add_argument("positional_peer", nargs="?", help=argparse.SUPPRESS)
     connection.add_argument("--user", help="使用自己的密钥登录对端的指定账户")
     connection.add_argument("--only-lan", action="store_true", help="本次仅使用机房内网")
+    connection.add_argument("--jobs", type=int, choices=(1, 2), help="机房内网 rsync 的最大并发路数（默认 2）")
     connection.add_argument("--config", type=Path, help="个人对端配置文件")
     connection.add_argument("--ssh-config", help="OpenSSH 配置文件")
     connection.add_argument("--local-dir", help="本机起始目录，默认当前目录")
@@ -258,6 +259,8 @@ def main(*, legacy=False):
             peer, remote, selected, revision = target
             with connect(peer) as session:
                 session.revision = revision
+                if args.jobs:
+                    session.lan_jobs = min(session.lan_jobs, args.jobs)
                 path = remote_directory(session.sftp, browser.panes[1].path if browser else remote)
                 if args.check:
                     local = os.path.realpath(os.path.expanduser(args.local_dir))

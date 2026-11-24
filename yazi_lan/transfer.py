@@ -35,14 +35,15 @@ def check_cancel(cancel):
 RSYNC_PROGRESS = re.compile(rb"^\s*([\d,]+)\s+(\d+)%\s+(\S+/s)(?:\s|$)")
 
 
-def rsync_copy(session, push, paths, dest, update, report, cancel):
+def rsync_copy(session, push, paths, dest, update, report, cancel, *, options=(), record=None):
+    check_cancel(cancel)
     # A NUL-separated files-from list avoids shell/glob expansion of either side's names.
     peer = session.peer.ssh
     target = dest.rstrip("/") + "/"
     ends = ["/", f"{peer}:{target}"] if push else [f"{peer}:/", target]
     args = ["rsync", "-rltps", "--from0", "--files-from=-", "--no-relative",
             "--partial-dir=.rsync-partial", "--info=progress2,name0", "--no-human-readable", "--outbuf=N",
-            "-e", shlex.join(session.ssh)]
+            "-e", shlex.join(session.ssh), *options]
     if not update:
         args.append("--ignore-existing")
     with tempfile.TemporaryFile() as names:
@@ -63,8 +64,11 @@ def rsync_copy(session, push, paths, dest, update, report, cancel):
                             continue
                         block = os.read(proc.stdout.fileno(), 16384)
                         lines = re.split(rb"[\r\n]", pending + block)
-                        pending = lines.pop()[-8192:] if block else b""
+                        pending = lines.pop()[-65536:] if block else b""
                         for line in lines:
+                            if record and line.startswith(b"PTO "):
+                                record(line[4:])
+                                continue
                             match = RSYNC_PROGRESS.match(line)
                             if match:
                                 count, percent, speed = match.groups()

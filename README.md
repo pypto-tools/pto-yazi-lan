@@ -119,7 +119,7 @@ curl -fsSL https://github.com/pypto-tools/pto-yazi-lan/releases/latest/download/
 
 Yazi 插件默认装到 `~/.config/yazi/plugins/lan-copy.yazi`，也支持 `YAZI_CONFIG_HOME` 和 `XDG_CONFIG_HOME`。首次安装会为新配置绑定 `F5`。已有的插件或快捷键文件会保留，下面的快捷键示例可用于合并自定义配置。
 
-也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.7.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
+也可以从同一个 Release 下载安装器和 wheel 后运行 `python3 install.py --wheel ./pto_yazi_lan-0.8.0-py3-none-any.whl`。pip 会安装依赖，下载文件可用同一 Release 中的 `SHA256SUMS` 校验。
 
 ## 从源码安装
 
@@ -131,7 +131,7 @@ source ~/.local/share/yazi-lan/venv/bin/activate
 python -m pip install .
 ```
 
-也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.7.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.7.0-py3-none-any.whl`。
+也可以只在一台机器上运行 `python -m pip wheel --no-deps --wheel-dir dist .`，将生成的 `dist/pto_yazi_lan-0.8.0-py3-none-any.whl` 复制到对端用户的主目录。在对端创建并激活虚拟环境后，运行 `python -m pip install ~/pto_yazi_lan-0.8.0-py3-none-any.whl`。
 
 两台机器都需要 Linux、Python 3.9 及以上、OpenSSH 客户端、iproute2，以及对方可访问的 SSH/SFTP 服务。两端装有 rsync 3.1 及以上时会使用 rsync。独立双栏面板可直接运行，从 Yazi 按 `F5` 打开需要本机装有兼容的 Yazi（已验证 26.9.1）。
 
@@ -198,16 +198,16 @@ desc = "在本机和对端之间复制"
 
 ## 传输面板
 
-两栏标题显示节点名，亮色标题和整行光标标出当前操作的一侧。目录、链接及常见文件类型有不同图标，宽窗口还会显示文件大小。底部提示本次上传或下载的目标。要显示完整图标，在发起 SSH 的终端中选用 Nerd Font。按 `i` 可切换为基础符号。
+两栏标题显示节点名，亮色标题和整行光标标出当前操作的一侧。目录、链接及常见文件类型有不同图标，宽窗口还会显示文件大小。底部提示本次上传或下载的目标。默认使用标准 emoji。按 `i` 可在 emoji、纯 ASCII 标记和 Nerd Font 图标之间循环切换。可用 `PTO_YAZI_ICONS=ascii` 或 `PTO_YAZI_ICONS=nerd` 设置启动模式。Nerd Font 需在发起 SSH 的终端里选用。
 
-按 `F5` 确认复制后，任务按顺序在后台执行。双栏底部显示方向、文件名、进度、速率和已传大小。rsync 显示本批次的进度，SFTP 显示当前文件的进度。复制期间可以继续浏览并追加任务，按 `t` 展开完整列表。退出或重连前可等待队列完成，或按 `x` 取消队列。
+按 `F5` 确认复制后，任务按顺序在后台执行。横向分隔线下的传输列表显示方向、文件名、进度、速率和已传大小。rsync 显示本批次的进度，SFTP 显示当前文件的进度。复制期间可以继续浏览并追加任务，按 `t` 展开完整列表。退出或重连前可等待队列完成，或按 `x` 取消队列。
 
-按 `p` 可在另一栏预览光标下的本地或远端项目。UTF-8 文本显示开头最多 8 KiB，二进制文件显示大小和十六进制摘要，符号链接显示目标。远端文件通过当前 SSH 连接读取。
+按 `p` 可在另一栏预览光标下的本地或远端项目。文本预览读取开头最多 8 KiB，支持 UTF-8、带 BOM 的 UTF-16/32，以及常见文本扩展名的 GBK/GB18030。PNG、GIF、JPEG、PDF 和 ZIP 会显示格式摘要，其他二进制文件显示十六进制摘要，符号链接显示目标。远端文件通过当前 SSH 连接读取。
 
 | 按键 | 操作 |
 | --- | --- |
 | `Tab` | 切换本机和对端两栏 |
-| `i` | 切换 Nerd Font 图标与基础符号 |
+| `i` | 切换 emoji、纯 ASCII 标记和 Nerd Font 图标 |
 | `p`、`PgUp` / `PgDn` | 开关文件预览、滚动预览 |
 | `t` | 展开或收起传输列表，展开后用 ↑↓ 滚动 |
 | `↑`、`↓` 或 `k`、`j` | 移动光标 |
@@ -228,5 +228,7 @@ desc = "在本机和对端之间复制"
 ## 目录和中断
 
 默认用 rsync 递归传输，保留文件的权限、修改时间及符号链接。重试时 rsync 可以利用目标端 `.rsync-partial` 内的数据。首版在高速内网上直接传目录，省去生成临时归档的读写开销。
+
+机房内网的 rsync 任务默认最多同时传两个文件批次，底部显示合计速率和完成耗时。一次按 `F5` 可以选择多个文件或整个目录。大文件独立传输，小文件成批发送，单个文件保持完整。NetBird 和 SFTP 使用单路。在同一对机器上比较时，可分别用 `--jobs 1` 和 `--jobs 2` 启动面板，将同一批文件复制到两个不同的空目录，再比较完成耗时。
 
 当对端账户只允许 SFTP，或任一端缺少 rsync 时，面板会显示 `SFTP`。此模式逐文件复制，用同目录临时文件在完整接收后发布。中断后可用跳过同名文件的方式重试，当前未完成的文件从头传输。远端覆盖已有文件需要 SFTP 服务支持 OpenSSH 的 POSIX rename 扩展。

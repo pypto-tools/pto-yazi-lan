@@ -33,18 +33,19 @@ class Entry(NamedTuple):
         return EXTENSIONS.get(os.path.splitext(self.name)[1][1:].lower(), "file")
 
 
-# Nerd Font icon, portable icon, terminal colour.
+# Nerd Font, standard emoji, ASCII fallback, terminal colour.
 ICONS = {
-    "folder": ("\uf07b", "▸", curses.COLOR_BLUE),
-    "link": ("\uf0c1", "↗", curses.COLOR_CYAN),
-    "archive": ("\uf410", "▦", curses.COLOR_RED),
-    "python": ("\ue73c", "λ", curses.COLOR_YELLOW),
-    "code": ("\uf121", "λ", curses.COLOR_CYAN),
-    "text": ("\uf15c", "≡", curses.COLOR_WHITE),
-    "image": ("\uf03e", "▧", curses.COLOR_MAGENTA),
-    "model": ("\uf1c0", "◆", curses.COLOR_GREEN),
-    "file": ("\uf016", "·", curses.COLOR_WHITE),
+    "folder": ("\uf07b", "📁", "D/", curses.COLOR_BLUE),
+    "link": ("\uf0c1", "🔗", "@", curses.COLOR_CYAN),
+    "archive": ("\uf410", "📦", "Z", curses.COLOR_RED),
+    "python": ("\ue73c", "🐍", "Py", curses.COLOR_YELLOW),
+    "code": ("\uf121", "💻", "<>", curses.COLOR_CYAN),
+    "text": ("\uf15c", "📝", "T", curses.COLOR_WHITE),
+    "image": ("\uf03e", "📷", "Im", curses.COLOR_MAGENTA),
+    "model": ("\uf1c0", "💾", "M", curses.COLOR_GREEN),
+    "file": ("\uf016", "📄", "F", curses.COLOR_WHITE),
 }
+ICON_MODES = ("nerd", "emoji", "ascii")
 EXTENSIONS = {
     ext: kind for kind, extensions in {
         "archive": "zip tar gz bz2 xz zst tgz 7z rar",
@@ -134,6 +135,11 @@ def write(screen, row, col, width, value, style=0, *, tail=False):
         screen.addstr(row, col, "".join(result), style)
 
 
+def divider(screen, row, width):
+    with contextlib.suppress(curses.error):
+        screen.hline(row, 0, getattr(curses, "ACS_HLINE", ord("-")), width, curses.A_DIM)
+
+
 class Browser:
     def __init__(self, local, remote, marked=(), focus=None):
         self.panes = [Pane(local), Pane(remote)]
@@ -142,7 +148,8 @@ class Browser:
         self.panes[0].load(focus=os.path.basename(focus) if focus else None)
         self.active = 0
         self.notice = ""
-        self.basic_icons = False
+        icons = os.environ.get("PTO_YAZI_ICONS", "emoji").lower()
+        self.icon_mode = icons if icons in ICON_MODES else "emoji"
         self.colors = {}
         self.queue = CopyQueue()
         self.show_jobs = False
@@ -167,11 +174,14 @@ class Browser:
         middle = width // 2
         detailed = height >= 12
         pane_top = 2 if detailed else 1
-        job_rows = min(3, max(1, len(self.queue.jobs))) if height >= 11 else 0
-        dock = job_rows + 1 if job_rows else 0
-        end = height - (3 if detailed else 2) - dock
+        end = height - (3 if detailed else 2)
+        job_rows = min(3, max(1, len(self.queue.jobs)), end - pane_top - 5) if height >= 11 else 0
+        dock = job_rows + 2 if job_rows else 0
+        end -= dock
         hosts = (session.peer.local_name or self.local_host, session.peer.remote_name or session.peer.ssh)
         route = f"{session.label}  {session.address}  ·  {'rsync / SSH' if session.rsync else 'SFTP'}"
+        if session.rsync and getattr(session, "lan_jobs", 1) == 2:
+            route += "  最多 2 路"
         write(screen, 0, 0, 14, " pto-yazi-lan ", curses.A_REVERSE | curses.A_BOLD)
         write(screen, 0, 15, width - 15, route, curses.A_BOLD)
         if detailed:
@@ -186,7 +196,9 @@ class Browser:
         with contextlib.suppress(curses.error):
             screen.vline(pane_top, middle, curses.ACS_VLINE, height - pane_top - 2 - dock)
         if dock:
-            self.draw_jobs(screen, height - 2 - dock, dock, width)
+            dock_top = height - 2 - dock
+            divider(screen, dock_top, width)
+            self.draw_jobs(screen, dock_top + 1, dock - 1, width)
         source, target = self.panes[self.active], self.panes[1 - self.active]
         action = " 上传 " if self.active == 0 else " 下载 "
         write(screen, height - 2, 0, 6, action, curses.A_BOLD | curses.A_REVERSE)
@@ -195,8 +207,14 @@ class Browser:
         if not dock and self.queue.current and not prompt:
             status = self.job_line(self.queue.current)
         write(screen, height - 2, 7, width - 8, prompt or self.notice or status, curses.A_BOLD)
-        keys = ("Enter/s 跳过同名   u 更新   Esc 返回" if prompt else
-                "F5 复制  p 预览  t 任务  Tab 切栏  空格 选择  Enter 进入  i 图标  r 重连  q 退出")
+        if prompt:
+            keys = "Enter/s 跳过同名   u 更新   Esc 返回"
+        elif self.show_preview:
+            keys = "PgUp 上翻  PgDn 下翻  p 关闭预览"
+            if width >= 64:
+                keys += "  ↑↓ 选文件  Tab 切栏  F5 复制"
+        else:
+            keys = "F5 复制  p 预览  t 任务  Tab 切栏  空格 选择  Enter 进入  i 图标  r 重连  q 退出"
         write(screen, height - 1, 0, width - 1, keys)
         screen.refresh()
 
@@ -220,11 +238,12 @@ class Browser:
             row_style = accent | curses.A_REVERSE | curses.A_BOLD if current else 0
             if current:
                 write(screen, y, x, span, " " * span, row_style)
-            glyph, basic, color = ICONS[item.kind]
-            tint = self.colors.get(color, 0)
+            icons = ICONS[item.kind]
+            glyph = icons[ICON_MODES.index(self.icon_mode)]
+            tint = self.colors.get(icons[-1], 0)
             if marked:
                 write(screen, y, x, 1, "*", row_style | curses.A_BOLD)
-            write(screen, y, x + 2, 2, basic if self.basic_icons else glyph, row_style or tint)
+            write(screen, y, x + 2, 2, glyph, row_style or tint)
             suffix = "/" if item.directory else "@" if item.link else ""
             name_style = tint | curses.A_BOLD if item.directory else 0
             write(screen, y, x + 5, span - 6 - size_width, item.name + suffix, row_style or name_style)
@@ -263,12 +282,18 @@ class Browser:
         if percent is not None:
             scope = "文件 " if name else ""
             detail = f"  {scope}{percent}%  {rate}  {file_size(count)}"
+        if job.elapsed:
+            detail += f"  耗时 {job.elapsed:.1f}s"
         return f"{direction} {job.status}{detail}  {name or job.name}  → {job.dest}" + (
             f"  {job.error}" if job.error else "")
 
     def draw_jobs(self, screen, top, rows, width, expanded=False):
         jobs = self.queue.jobs
         write(screen, top, 0, width, f" 传输列表  {len(jobs)}   t {'收起' if expanded else '展开'}", curses.A_BOLD)
+        if expanded:
+            divider(screen, top + 1, width)
+            top += 1
+            rows -= 1
         if not jobs:
             write(screen, top + 1, 1, width - 2, "暂无传输", curses.A_DIM)
             return
@@ -340,7 +365,7 @@ class Browser:
             with contextlib.suppress(curses.error):
                 curses.use_default_colors()
                 background = -1
-            for pair, color in enumerate(sorted({icon[2] for icon in ICONS.values()}), 1):
+            for pair, color in enumerate(sorted({icon[-1] for icon in ICONS.values()}), 1):
                 with contextlib.suppress(curses.error):
                     curses.init_pair(pair, color, background)
                     self.colors[color] = curses.color_pair(pair)
@@ -390,7 +415,8 @@ class Browser:
                 elif key == 9:
                     self.active = 1 - self.active
                 elif key == ord("i"):
-                    self.basic_icons = not self.basic_icons
+                    self.icon_mode = ICON_MODES[(ICON_MODES.index(self.icon_mode) + 1) % len(ICON_MODES)]
+                    self.notice = f"文件图标  {self.icon_mode}"
                 elif key in (curses.KEY_DOWN, ord("j")):
                     pane.cursor = min(pane.cursor + 1, max(0, len(pane.items) - 1))
                 elif key in (curses.KEY_UP, ord("k")):

@@ -148,6 +148,7 @@ class Session:
     reason: str = ""
     login: str = ""
     revision: str = ""
+    lan_jobs: int = 1
 
 
 @contextlib.contextmanager
@@ -233,6 +234,7 @@ def connect(peer):
                 source = lan_source(peer.lan, interface, peer.local_lan)
                 session = stack.enter_context(open_endpoint(
                     peer, peer.lan, source, f"内网 {interface}", alias))
+                session.lan_jobs = 2
             except Unreachable as exc:
                 if not peer.netbird:
                     raise

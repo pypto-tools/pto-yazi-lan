@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 WHEEL = f"pto_yazi_lan-{VERSION}-py3-none-any.whl"
 RELEASE = f"https://github.com/pypto-tools/pto-yazi-lan/releases/download/v{VERSION}"
 SYSTEM_ROOT = Path("/usr/local/lib/pto-yazi-lan")

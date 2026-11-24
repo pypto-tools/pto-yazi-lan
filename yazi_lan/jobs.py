@@ -3,6 +3,7 @@ import contextlib
 import os
 import socket
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from threading import Event
@@ -10,7 +11,8 @@ from threading import Event
 import paramiko
 
 from .connection import SftpChannel
-from .transfer import CopyCancelled, copy_selected
+from .parallel import copy_lan
+from .transfer import CopyCancelled, copy_selected, selection
 
 
 @contextlib.contextmanager
@@ -50,6 +52,7 @@ class Job:
     progress: tuple = (0, None, "—", "")
     error: str = ""
     cancel: Event = field(default_factory=Event)
+    elapsed: float = 0
 
     @property
     def name(self):
@@ -60,8 +63,14 @@ class Job:
         def report(count, percent, rate, name):
             self.progress = (count, percent, rate, name)
 
+        started = time.monotonic()
         with transfer_session(session) as channel:
-            copy_selected(channel, self.push, self.paths, self.dest, self.update, report, self.cancel)
+            if channel.rsync and channel.lan_jobs == 2 and not (
+                    self.push and len(self.paths) == 1 and os.path.isfile(self.paths[0])):
+                copy_lan(channel, self.push, selection(self.paths), self.dest, self.update, report, self.cancel)
+            else:
+                copy_selected(channel, self.push, self.paths, self.dest, self.update, report, self.cancel)
+        self.elapsed = time.monotonic() - started
 
 
 class CopyQueue:
